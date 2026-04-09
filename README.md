@@ -39,3 +39,24 @@ Environment variables:
 - `TRIPTYCH_ALLOWED_REPO_ROOTS` optional comma-separated absolute paths
 - `TRIPTYCH_LABELS` optional comma-separated `key=value` pairs
 - `TRIPTYCH_HEARTBEAT_INTERVAL` default `15s`
+
+## E2E Smoke Tests
+
+Run the full end-to-end smoke test suite:
+
+```
+make e2e
+```
+
+Prerequisites: Docker (for disposable Postgres), tmux, Python 3, Go toolchain.
+
+The harness starts a Postgres container, builds and runs agentserver + agentd,
+exercises host registration, heartbeat, job creation, tmux-backed launch,
+send/interrupt/stop commands, and reconciliation. All resources are cleaned up
+automatically. On failure, logs are saved to `.artifacts/e2e/<timestamp>/`.
+
+Pass `-v` for verbose output or `--keep` to retain artifacts on success:
+
+```
+python3 scripts/e2e_smoke.py -v --keep
+```
