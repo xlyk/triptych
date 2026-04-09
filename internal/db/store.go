@@ -24,6 +24,24 @@ type Store struct {
 	pool *pgxpool.Pool
 }
 
+// JobRun joins a job with its run for work/inspect-oriented reads.
+type JobRun struct {
+	Job domain.Job
+	Run domain.Run
+}
+
+// RunStateUpdate is a partial update for daemon-reported run state.
+type RunStateUpdate struct {
+	Status              domain.RunStatus
+	TmuxSessionName     *string
+	TmuxWindowName      *string
+	StartedAt           *time.Time
+	FinishedAt          *time.Time
+	LastEventAt         *time.Time
+	StopRequested       *bool
+	TerminalDisposition *domain.TerminalDisposition
+}
+
 // NewStore creates a Store backed by the given pool.
 func NewStore(pool *pgxpool.Pool) *Store {
 	return &Store{pool: pool}
@@ -109,6 +127,30 @@ func (s *Store) UpdateHostHeartbeat(ctx context.Context, id domain.HostID, onlin
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) UpsertHost(ctx context.Context, h *domain.Host) error {
+	caps, _ := json.Marshal(h.Capabilities)
+	roots, _ := json.Marshal(h.AllowedRepoRoots)
+	labels, _ := json.Marshal(h.Labels)
+	now := time.Now().UTC()
+	err := s.pool.QueryRow(ctx, `
+		INSERT INTO hosts (host_id, hostname, online, last_heartbeat_at, capabilities, allowed_repo_roots, labels, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)
+		ON CONFLICT (host_id) DO UPDATE SET
+			hostname = EXCLUDED.hostname,
+			online = EXCLUDED.online,
+			last_heartbeat_at = EXCLUDED.last_heartbeat_at,
+			capabilities = EXCLUDED.capabilities,
+			allowed_repo_roots = EXCLUDED.allowed_repo_roots,
+			labels = EXCLUDED.labels,
+			updated_at = EXCLUDED.updated_at
+		RETURNING created_at, updated_at
+	`, h.HostID, h.Hostname, h.Online, h.LastHeartbeatAt, caps, roots, labels, now).Scan(&h.CreatedAt, &h.UpdatedAt)
+	if err != nil {
+		return fmt.Errorf("upsert host: %w", err)
 	}
 	return nil
 }
@@ -232,6 +274,53 @@ func (s *Store) UpdateJobStatus(ctx context.Context, id domain.JobID, status dom
 	return nil
 }
 
+func (s *Store) CreateJobWithInitialRun(ctx context.Context, j *domain.Job, r *domain.Run) error {
+	meta, _ := json.Marshal(j.Metadata)
+	var idempKey *string
+	if j.IdempotencyKey != "" {
+		idempKey = &j.IdempotencyKey
+	}
+	now := time.Now().UTC()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin create job with run: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback(ctx)
+		}
+	}()
+
+	if err = tx.QueryRow(ctx, `
+		INSERT INTO jobs (job_id, host_id, agent, status, repo_path, workdir, goal, priority, max_duration, idempotency_key, metadata_json, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12)
+		RETURNING created_at, updated_at
+	`, j.JobID, j.HostID, j.Agent, j.Status, j.RepoPath, j.Workdir, j.Goal, j.Priority, j.MaxDuration, idempKey, meta, now).Scan(&j.CreatedAt, &j.UpdatedAt); err != nil {
+		if isUniqueViolation(err) {
+			return fmt.Errorf("job %s: %w", j.JobID, ErrConflict)
+		}
+		return fmt.Errorf("create job in tx: %w", err)
+	}
+
+	if err = tx.QueryRow(ctx, `
+		INSERT INTO runs (run_id, job_id, host_id, status, tmux_session_name, tmux_window_name, started_at, finished_at, last_event_at, stop_requested, terminal_disposition, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12)
+		RETURNING created_at, updated_at
+	`, r.RunID, r.JobID, r.HostID, r.Status, nilIfEmpty(r.TmuxSessionName), nilIfEmpty(r.TmuxWindowName),
+		r.StartedAt, r.FinishedAt, r.LastEventAt, r.StopRequested, nilIfEmpty(string(r.TerminalDisposition)), now,
+	).Scan(&r.CreatedAt, &r.UpdatedAt); err != nil {
+		if isUniqueViolation(err) {
+			return fmt.Errorf("run %s: %w", r.RunID, ErrConflict)
+		}
+		return fmt.Errorf("create run in tx: %w", err)
+	}
+
+	if err = tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit create job with run: %w", err)
+	}
+	return nil
+}
+
 // --- Runs ---
 
 // CreateRun inserts a new run. The partial unique index on runs enforces
@@ -279,6 +368,34 @@ func (s *Store) GetRun(ctx context.Context, id domain.RunID) (*domain.Run, error
 	return r, nil
 }
 
+func (s *Store) GetLatestRunByJob(ctx context.Context, jobID domain.JobID) (*domain.Run, error) {
+	r := &domain.Run{}
+	var tmuxSession, tmuxWindow, termDisp *string
+	err := s.pool.QueryRow(ctx, `
+		SELECT run_id, job_id, host_id, status, tmux_session_name, tmux_window_name, started_at, finished_at, last_event_at, stop_requested, terminal_disposition, created_at, updated_at
+		FROM runs
+		WHERE job_id = $1
+		ORDER BY created_at DESC
+		LIMIT 1
+	`, jobID).Scan(&r.RunID, &r.JobID, &r.HostID, &r.Status, &tmuxSession, &tmuxWindow, &r.StartedAt, &r.FinishedAt, &r.LastEventAt, &r.StopRequested, &termDisp, &r.CreatedAt, &r.UpdatedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("get latest run by job: %w", err)
+	}
+	if tmuxSession != nil {
+		r.TmuxSessionName = *tmuxSession
+	}
+	if tmuxWindow != nil {
+		r.TmuxWindowName = *tmuxWindow
+	}
+	if termDisp != nil {
+		r.TerminalDisposition = domain.TerminalDisposition(*termDisp)
+	}
+	return r, nil
+}
+
 func (s *Store) UpdateRunStatus(ctx context.Context, id domain.RunID, status domain.RunStatus) error {
 	now := time.Now().UTC()
 	tag, err := s.pool.Exec(ctx, `
@@ -305,6 +422,80 @@ func (s *Store) FinishRun(ctx context.Context, id domain.RunID, status domain.Ru
 		return ErrNotFound
 	}
 	return nil
+}
+
+func (s *Store) UpdateRunState(ctx context.Context, id domain.RunID, update RunStateUpdate) error {
+	var tmuxSessionName, tmuxWindowName, terminalDisposition *string
+	if update.TmuxSessionName != nil {
+		tmuxSessionName = update.TmuxSessionName
+	}
+	if update.TmuxWindowName != nil {
+		tmuxWindowName = update.TmuxWindowName
+	}
+	if update.TerminalDisposition != nil {
+		value := string(*update.TerminalDisposition)
+		terminalDisposition = &value
+	}
+	now := time.Now().UTC()
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE runs
+		SET status = $2,
+			tmux_session_name = COALESCE($3, tmux_session_name),
+			tmux_window_name = COALESCE($4, tmux_window_name),
+			started_at = COALESCE($5, started_at),
+			finished_at = COALESCE($6, finished_at),
+			last_event_at = COALESCE($7, last_event_at),
+			stop_requested = COALESCE($8, stop_requested),
+			terminal_disposition = COALESCE($9, terminal_disposition),
+			updated_at = $10
+		WHERE run_id = $1
+	`, id, update.Status, tmuxSessionName, tmuxWindowName, update.StartedAt, update.FinishedAt, update.LastEventAt, update.StopRequested, terminalDisposition, now)
+	if err != nil {
+		return fmt.Errorf("update run state: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) SetRunStopRequested(ctx context.Context, id domain.RunID, stopRequested bool) error {
+	now := time.Now().UTC()
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE runs SET stop_requested = $2, updated_at = $3 WHERE run_id = $1
+	`, id, stopRequested, now)
+	if err != nil {
+		return fmt.Errorf("set run stop requested: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) ListLaunchableJobRunsByHost(ctx context.Context, hostID domain.HostID) ([]JobRun, error) {
+	return s.listJobRunsByHost(ctx, hostID, `
+		SELECT
+			j.job_id, j.host_id, j.agent, j.status, j.repo_path, j.workdir, j.goal, j.priority, j.max_duration, j.idempotency_key, j.metadata_json, j.created_at, j.updated_at,
+			r.run_id, r.job_id, r.host_id, r.status, r.tmux_session_name, r.tmux_window_name, r.started_at, r.finished_at, r.last_event_at, r.stop_requested, r.terminal_disposition, r.created_at, r.updated_at
+		FROM jobs j
+		JOIN runs r ON r.job_id = j.job_id
+		WHERE j.host_id = $1 AND r.status = 'pending_launch'
+		ORDER BY r.created_at
+	`)
+}
+
+func (s *Store) ListActiveJobRunsByHost(ctx context.Context, hostID domain.HostID) ([]JobRun, error) {
+	return s.listJobRunsByHost(ctx, hostID, `
+		SELECT
+			j.job_id, j.host_id, j.agent, j.status, j.repo_path, j.workdir, j.goal, j.priority, j.max_duration, j.idempotency_key, j.metadata_json, j.created_at, j.updated_at,
+			r.run_id, r.job_id, r.host_id, r.status, r.tmux_session_name, r.tmux_window_name, r.started_at, r.finished_at, r.last_event_at, r.stop_requested, r.terminal_disposition, r.created_at, r.updated_at
+		FROM jobs j
+		JOIN runs r ON r.job_id = j.job_id
+		WHERE j.host_id = $1
+			AND r.status NOT IN ('pending_launch', 'exited', 'crashed')
+		ORDER BY r.created_at
+	`)
 }
 
 // --- Commands ---
@@ -402,6 +593,36 @@ func (s *Store) UpdateCommandState(ctx context.Context, id domain.CommandID, sta
 		return ErrNotFound
 	}
 	return nil
+}
+
+func (s *Store) ListPendingCommandsByHost(ctx context.Context, hostID domain.HostID) ([]domain.Command, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT command_id, job_id, run_id, host_id, command_type, request_idempotency_key, payload_json, state, created_at, updated_at
+		FROM commands
+		WHERE host_id = $1 AND state = 'recorded'
+		ORDER BY created_at
+	`, hostID)
+	if err != nil {
+		return nil, fmt.Errorf("list pending commands by host: %w", err)
+	}
+	defer rows.Close()
+	var commands []domain.Command
+	for rows.Next() {
+		var c domain.Command
+		var idempKey *string
+		var payload []byte
+		if err := rows.Scan(&c.CommandID, &c.JobID, &c.RunID, &c.HostID, &c.CommandType, &idempKey, &payload, &c.State, &c.CreatedAt, &c.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan pending command: %w", err)
+		}
+		if idempKey != nil {
+			c.RequestIdempotencyKey = *idempKey
+		}
+		if payload != nil {
+			c.PayloadJSON = string(payload)
+		}
+		commands = append(commands, c)
+	}
+	return commands, rows.Err()
 }
 
 // --- Events ---
@@ -504,4 +725,40 @@ func nilIfEmpty(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+func (s *Store) listJobRunsByHost(ctx context.Context, hostID domain.HostID, query string) ([]JobRun, error) {
+	rows, err := s.pool.Query(ctx, query, hostID)
+	if err != nil {
+		return nil, fmt.Errorf("list job runs by host: %w", err)
+	}
+	defer rows.Close()
+	var out []JobRun
+	for rows.Next() {
+		var item JobRun
+		var jobMeta []byte
+		var jobIdempotencyKey *string
+		var tmuxSessionName, tmuxWindowName, terminalDisposition *string
+		if err := rows.Scan(
+			&item.Job.JobID, &item.Job.HostID, &item.Job.Agent, &item.Job.Status, &item.Job.RepoPath, &item.Job.Workdir, &item.Job.Goal, &item.Job.Priority, &item.Job.MaxDuration, &jobIdempotencyKey, &jobMeta, &item.Job.CreatedAt, &item.Job.UpdatedAt,
+			&item.Run.RunID, &item.Run.JobID, &item.Run.HostID, &item.Run.Status, &tmuxSessionName, &tmuxWindowName, &item.Run.StartedAt, &item.Run.FinishedAt, &item.Run.LastEventAt, &item.Run.StopRequested, &terminalDisposition, &item.Run.CreatedAt, &item.Run.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan job run: %w", err)
+		}
+		if jobIdempotencyKey != nil {
+			item.Job.IdempotencyKey = *jobIdempotencyKey
+		}
+		_ = json.Unmarshal(jobMeta, &item.Job.Metadata)
+		if tmuxSessionName != nil {
+			item.Run.TmuxSessionName = *tmuxSessionName
+		}
+		if tmuxWindowName != nil {
+			item.Run.TmuxWindowName = *tmuxWindowName
+		}
+		if terminalDisposition != nil {
+			item.Run.TerminalDisposition = domain.TerminalDisposition(*terminalDisposition)
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
 }
