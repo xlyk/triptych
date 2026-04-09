@@ -55,6 +55,18 @@ _cleanup_fns = []
 _results = []
 
 verbose = False
+mode = "placeholder"
+
+MODE_PLACEHOLDER = "placeholder"
+MODE_REAL_CLAUDE = "real-claude"
+PLACEHOLDER_GOAL = "E2E smoke test job"
+REAL_CLAUDE_GOAL = "Triptych real-Claude smoke test: reply briefly with the exact text REAL_CLAUDE_SMOKE_OK."
+CLAUDE_TRUST_PROMPT_SNIPPETS = (
+    "Do you trust",
+    "trust this folder",
+    "trustedDirectories",
+    "permission_mode",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -68,6 +80,10 @@ def log(msg):
 def logv(msg):
     if verbose:
         print(f"    [v] {msg}", flush=True)
+
+
+def current_goal():
+    return PLACEHOLDER_GOAL if mode == MODE_PLACEHOLDER else REAL_CLAUDE_GOAL
 
 
 def register_cleanup(fn, label=""):
@@ -295,6 +311,12 @@ def start_agentd(bin_dir, artifacts):
         "TRIPTYCH_ALLOWED_REPO_ROOTS": str(REPO_ROOT),
         "TRIPTYCH_HEARTBEAT_INTERVAL": HEARTBEAT_INTERVAL,
     }
+    if mode == MODE_PLACEHOLDER:
+        env["TRIPTYCH_LAUNCH_MODE"] = MODE_PLACEHOLDER
+    elif mode == MODE_REAL_CLAUDE:
+        env["TRIPTYCH_CLAUDE_TRUSTED_DIRECTORIES"] = str(REPO_ROOT)
+        env["TRIPTYCH_CLAUDE_PERMISSION_MODE"] = "dontAsk"
+        env["TRIPTYCH_CLAUDE_STARTUP_HANDSHAKE"] = "true"
     proc = subprocess.Popen(
         [str(bin_dir / "agentd")],
         env=env,
@@ -370,7 +392,7 @@ def test_create_job_and_launch():
         "agent": "claude",
         "host_id": HOST_ID,
         "repo_path": str(REPO_ROOT),
-        "goal": "E2E smoke test job",
+        "goal": current_goal(),
         "metadata": {"e2e": "true"},
     })
     job = resp["data"]["job"]
@@ -449,6 +471,40 @@ def test_snapshot_captured():
         f"expected placeholder output, got: {snap['output'][:100]}"
 
     logv(f"snapshot verified: {snap['line_count']} lines")
+
+
+def test_real_claude_snapshot_captured():
+    """Verify a real Claude launch delivers the goal marker and clears the trust prompt."""
+    job_id = test_create_job_and_launch.job_id
+    goal_marker = "REAL_CLAUDE_SMOKE_OK"
+
+    def snapshot_has_marker():
+        try:
+            resp = api("GET", f"/v1/jobs/{job_id}/tail")
+            snap = resp["data"]["snapshot"]
+            output = snap.get("output", "")
+            logv(f"  real-claude snapshot output length: {len(output)}, line_count: {snap.get('line_count', 0)}")
+            lowered = output.lower()
+            for snippet in CLAUDE_TRUST_PROMPT_SNIPPETS:
+                if snippet.lower() in lowered:
+                    raise AssertionError(f"unexpected trust prompt content in output: {snippet!r}")
+            return goal_marker in output
+        except Exception as e:
+            logv(f"  real-claude snapshot not yet ready: {e}")
+            return False
+
+    poll_until(snapshot_has_marker, 60, "real-claude marker in snapshot")
+
+    resp = api("GET", f"/v1/jobs/{job_id}/tail")
+    snap = resp["data"]["snapshot"]
+    output = snap.get("output", "")
+    assert snap["line_count"] > 0, f"expected line_count > 0, got {snap['line_count']}"
+    assert not snap["stale"], "snapshot should not be stale"
+    assert output.strip(), "expected non-empty real-Claude output"
+    assert goal_marker in output, f"expected marker {goal_marker!r} in output, got: {output[-400:]}"
+    lowered = output.lower()
+    for snippet in CLAUDE_TRUST_PROMPT_SNIPPETS:
+        assert snippet.lower() not in lowered, f"unexpected trust prompt content in output: {snippet!r}"
 
 
 def test_send_command():
@@ -626,7 +682,8 @@ def test_list_jobs():
     """Verify list jobs returns the jobs we created."""
     resp = api("GET", "/v1/jobs")
     jobs = resp["data"]["jobs"]
-    assert len(jobs) >= 2, f"expected at least 2 jobs, got {len(jobs)}"
+    minimum = 2 if mode == MODE_PLACEHOLDER else 1
+    assert len(jobs) >= minimum, f"expected at least {minimum} jobs, got {len(jobs)}"
     job_ids = [j["job"]["job_id"] for j in jobs]
     if hasattr(test_create_job_and_launch, "job_id"):
         assert test_create_job_and_launch.job_id in job_ids, "first job not in list"
@@ -643,18 +700,31 @@ def cleanup_tmux_sessions():
         tmux_kill_session(session)
 
 
+def preflight():
+    if mode == MODE_REAL_CLAUDE and shutil.which("claude") is None:
+        raise RuntimeError("real-Claude smoke mode requires the `claude` CLI on PATH")
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
 def main():
     global verbose
+    global mode
 
     parser = argparse.ArgumentParser(description="Triptych E2E smoke tests")
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
     parser.add_argument("--keep", action="store_true", help="Keep artifacts even on success")
+    parser.add_argument(
+        "--mode",
+        choices=(MODE_PLACEHOLDER, MODE_REAL_CLAUDE),
+        default=MODE_PLACEHOLDER,
+        help="Smoke mode to run (default: placeholder)",
+    )
     args = parser.parse_args()
     verbose = args.verbose
+    mode = args.mode
 
     print("=" * 60)
     print("Triptych E2E Smoke Tests")
@@ -665,6 +735,8 @@ def main():
     register_cleanup(lambda: cleanup_tmux_sessions(), "cleanup tmux sessions")
 
     try:
+        preflight()
+
         # Infrastructure
         start_postgres()
         bin_dir = build_binaries()
@@ -672,19 +744,22 @@ def main():
         start_agentd(bin_dir, artifacts)
 
         print()
-        print("Running tests:")
+        print(f"Running tests (mode={mode}):")
 
         # Tests - order matters for some (launch before send/stop/reconcile)
         run_test("host_registration", test_host_registration)
         run_test("heartbeat_visible", test_heartbeat_visible)
         run_test("create_job_and_launch", test_create_job_and_launch)
         run_test("attach_metadata", test_attach_metadata)
-        run_test("snapshot_captured", test_snapshot_captured)
-        run_test("send_command", test_send_command)
-        run_test("interrupt_command", test_interrupt_command)
-        run_test("stop_command", test_stop_command)
-        run_test("reconciliation", test_reconciliation)
-        run_test("idempotent_job_creation", test_idempotent_job_creation)
+        if mode == MODE_PLACEHOLDER:
+            run_test("snapshot_captured", test_snapshot_captured)
+            run_test("send_command", test_send_command)
+            run_test("interrupt_command", test_interrupt_command)
+            run_test("stop_command", test_stop_command)
+            run_test("reconciliation", test_reconciliation)
+            run_test("idempotent_job_creation", test_idempotent_job_creation)
+        else:
+            run_test("real_claude_snapshot_captured", test_real_claude_snapshot_captured)
         run_test("list_jobs", test_list_jobs)
 
     except Exception as e:

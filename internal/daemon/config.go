@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/xlyk/triptych/internal/domain"
+	triptychtmux "github.com/xlyk/triptych/internal/tmux"
 )
 
 const (
@@ -24,6 +26,8 @@ type Config struct {
 	Labels            map[string]string
 	StateDir          string
 	HeartbeatInterval time.Duration
+	LaunchMode        triptychtmux.LaunchMode
+	Launch            triptychtmux.LaunchConfig
 }
 
 func LoadConfig() (Config, error) {
@@ -89,6 +93,61 @@ func LoadConfigFromEnv(getenv func(string) string, hostname func() (string, erro
 		cfg.HeartbeatInterval = interval
 	}
 
+	if raw := strings.TrimSpace(getenv("TRIPTYCH_LAUNCH_MODE")); raw != "" {
+		switch triptychtmux.LaunchMode(raw) {
+		case triptychtmux.LaunchModeReal, triptychtmux.LaunchModePlaceholder:
+			cfg.LaunchMode = triptychtmux.LaunchMode(raw)
+		default:
+			return Config{}, fmt.Errorf("TRIPTYCH_LAUNCH_MODE must be \"\" (real) or \"placeholder\", got %q", raw)
+		}
+	}
+
+	claudeSettingsFile := strings.TrimSpace(getenv("TRIPTYCH_CLAUDE_SETTINGS_FILE"))
+	if claudeSettingsFile != "" {
+		if !filepath.IsAbs(claudeSettingsFile) {
+			return Config{}, fmt.Errorf("TRIPTYCH_CLAUDE_SETTINGS_FILE must be absolute: %q", claudeSettingsFile)
+		}
+		cfg.Launch.Claude.SettingsFile = filepath.Clean(claudeSettingsFile)
+	}
+	cfg.Launch.Claude.SettingsJSON = strings.TrimSpace(getenv("TRIPTYCH_CLAUDE_SETTINGS_JSON"))
+	if cfg.Launch.Claude.SettingsFile != "" && cfg.Launch.Claude.SettingsJSON != "" {
+		return Config{}, fmt.Errorf("TRIPTYCH_CLAUDE_SETTINGS_FILE and TRIPTYCH_CLAUDE_SETTINGS_JSON are mutually exclusive")
+	}
+	if cfg.Launch.Claude.SettingsJSON != "" {
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(cfg.Launch.Claude.SettingsJSON), &parsed); err != nil {
+			return Config{}, fmt.Errorf("TRIPTYCH_CLAUDE_SETTINGS_JSON must be valid JSON: %w", err)
+		}
+	}
+	cfg.Launch.Claude.TrustedDirectories = splitCSV(getenv("TRIPTYCH_CLAUDE_TRUSTED_DIRECTORIES"))
+	for _, dir := range cfg.Launch.Claude.TrustedDirectories {
+		if !filepath.IsAbs(dir) {
+			return Config{}, fmt.Errorf("TRIPTYCH_CLAUDE_TRUSTED_DIRECTORIES entries must be absolute: %q", dir)
+		}
+	}
+	if cfg.Launch.Claude.SettingsFile != "" && len(cfg.Launch.Claude.TrustedDirectories) > 0 {
+		return Config{}, fmt.Errorf("TRIPTYCH_CLAUDE_TRUSTED_DIRECTORIES cannot be combined with TRIPTYCH_CLAUDE_SETTINGS_FILE; put trustedDirectories in the settings file instead")
+	}
+	cfg.Launch.Claude.PermissionMode = strings.TrimSpace(getenv("TRIPTYCH_CLAUDE_PERMISSION_MODE"))
+	if raw := strings.TrimSpace(getenv("TRIPTYCH_CLAUDE_STARTUP_HANDSHAKE")); raw != "" {
+		startupHandshake, err := parseBoolEnv(raw)
+		if err != nil {
+			return Config{}, fmt.Errorf("TRIPTYCH_CLAUDE_STARTUP_HANDSHAKE: %w", err)
+		}
+		cfg.Launch.Claude.StartupHandshake = startupHandshake
+	}
+
+	cfg.Launch.Codex.ConfigProfile = strings.TrimSpace(getenv("TRIPTYCH_CODEX_CONFIG_PROFILE"))
+	cfg.Launch.Codex.ApprovalPolicy = strings.TrimSpace(getenv("TRIPTYCH_CODEX_APPROVAL_POLICY"))
+	cfg.Launch.Codex.SandboxMode = strings.TrimSpace(getenv("TRIPTYCH_CODEX_SANDBOX_MODE"))
+	if raw := strings.TrimSpace(getenv("TRIPTYCH_CODEX_TRUST_PROJECT")); raw != "" {
+		trustProject, err := parseBoolEnv(raw)
+		if err != nil {
+			return Config{}, fmt.Errorf("TRIPTYCH_CODEX_TRUST_PROJECT: %w", err)
+		}
+		cfg.Launch.Codex.TrustProject = trustProject
+	}
+
 	return cfg, nil
 }
 
@@ -135,4 +194,15 @@ func parseLabels(raw string) (map[string]string, error) {
 		labels[key] = value
 	}
 	return labels, nil
+}
+
+func parseBoolEnv(raw string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "1", "true", "yes", "on":
+		return true, nil
+	case "0", "false", "no", "off":
+		return false, nil
+	default:
+		return false, fmt.Errorf("must be a boolean value")
+	}
 }

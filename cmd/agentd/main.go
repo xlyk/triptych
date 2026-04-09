@@ -26,13 +26,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	launcher := triptychtmux.NewLauncher()
+	launcher.Mode = cfg.LaunchMode
+	launcher.Config = cfg.Launch
+
 	runner := daemon.Runner{
 		Config: cfg,
 		Client: daemon.NewHTTPClient(cfg.ServerURL, &http.Client{
 			Timeout: 10 * time.Second,
 		}),
 		Logger:  logger,
-		Launch:  triptychtmux.NewLauncher(),
+		Launch:  launcher,
 		Capture: triptychtmux.NewCapturer(),
 	}
 

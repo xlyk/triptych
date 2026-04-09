@@ -6,17 +6,27 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	triptychtmux "github.com/xlyk/triptych/internal/tmux"
 )
 
 func TestLoadConfigFromEnv(t *testing.T) {
 	t.Run("defaults and parsing", func(t *testing.T) {
 		env := map[string]string{
-			"HOME":                        "/tmp/home",
-			"TRIPTYCH_HOST_ID":            "host-1",
-			"TRIPTYCH_CAPABILITIES":       "codex, tmux ,",
-			"TRIPTYCH_ALLOWED_REPO_ROOTS": "/tmp/repo1, /tmp/repo2",
-			"TRIPTYCH_LABELS":             "env=dev,region=local",
-			"TRIPTYCH_HEARTBEAT_INTERVAL": "30s",
+			"HOME":                                "/tmp/home",
+			"TRIPTYCH_HOST_ID":                    "host-1",
+			"TRIPTYCH_CAPABILITIES":               "codex, tmux ,",
+			"TRIPTYCH_ALLOWED_REPO_ROOTS":         "/tmp/repo1, /tmp/repo2",
+			"TRIPTYCH_LABELS":                     "env=dev,region=local",
+			"TRIPTYCH_HEARTBEAT_INTERVAL":         "30s",
+			"TRIPTYCH_CLAUDE_SETTINGS_JSON":       `{"theme":"dark"}`,
+			"TRIPTYCH_CLAUDE_TRUSTED_DIRECTORIES": "/tmp/repo1,/tmp/repo2",
+			"TRIPTYCH_CLAUDE_PERMISSION_MODE":     "dontAsk",
+			"TRIPTYCH_CLAUDE_STARTUP_HANDSHAKE":   "true",
+			"TRIPTYCH_CODEX_CONFIG_PROFILE":       "triptych",
+			"TRIPTYCH_CODEX_APPROVAL_POLICY":      "never",
+			"TRIPTYCH_CODEX_SANDBOX_MODE":         "workspace-write",
+			"TRIPTYCH_CODEX_TRUST_PROJECT":        "true",
 		}
 
 		cfg, err := LoadConfigFromEnv(func(key string) string { return env[key] }, func() (string, error) {
@@ -50,6 +60,30 @@ func TestLoadConfigFromEnv(t *testing.T) {
 		if cfg.HeartbeatInterval != 30*time.Second {
 			t.Fatalf("HeartbeatInterval = %s, want %s", cfg.HeartbeatInterval, 30*time.Second)
 		}
+		if cfg.Launch.Claude.SettingsJSON != `{"theme":"dark"}` {
+			t.Fatalf("Claude.SettingsJSON = %q", cfg.Launch.Claude.SettingsJSON)
+		}
+		if !reflect.DeepEqual(cfg.Launch.Claude.TrustedDirectories, []string{"/tmp/repo1", "/tmp/repo2"}) {
+			t.Fatalf("Claude.TrustedDirectories = %#v", cfg.Launch.Claude.TrustedDirectories)
+		}
+		if cfg.Launch.Claude.PermissionMode != "dontAsk" {
+			t.Fatalf("Claude.PermissionMode = %q", cfg.Launch.Claude.PermissionMode)
+		}
+		if !cfg.Launch.Claude.StartupHandshake {
+			t.Fatal("expected Claude.StartupHandshake=true")
+		}
+		if cfg.Launch.Codex.ConfigProfile != "triptych" {
+			t.Fatalf("Codex.ConfigProfile = %q", cfg.Launch.Codex.ConfigProfile)
+		}
+		if cfg.Launch.Codex.ApprovalPolicy != "never" {
+			t.Fatalf("Codex.ApprovalPolicy = %q", cfg.Launch.Codex.ApprovalPolicy)
+		}
+		if cfg.Launch.Codex.SandboxMode != "workspace-write" {
+			t.Fatalf("Codex.SandboxMode = %q", cfg.Launch.Codex.SandboxMode)
+		}
+		if !cfg.Launch.Codex.TrustProject {
+			t.Fatal("expected Codex.TrustProject=true")
+		}
 	})
 
 	t.Run("explicit hostname and server URL trim slash", func(t *testing.T) {
@@ -78,6 +112,27 @@ func TestLoadConfigFromEnv(t *testing.T) {
 		}
 		if cfg.HeartbeatInterval != DefaultHeartbeatInterval {
 			t.Fatalf("HeartbeatInterval = %s, want %s", cfg.HeartbeatInterval, DefaultHeartbeatInterval)
+		}
+	})
+
+	t.Run("launch mode and settings file", func(t *testing.T) {
+		env := map[string]string{
+			"TRIPTYCH_HOST_ID":              "host-3",
+			"TRIPTYCH_LAUNCH_MODE":          string(triptychtmux.LaunchModePlaceholder),
+			"TRIPTYCH_CLAUDE_SETTINGS_FILE": "/etc/triptych/claude-settings.json",
+		}
+
+		cfg, err := LoadConfigFromEnv(func(key string) string { return env[key] }, func() (string, error) {
+			return "host.local", nil
+		})
+		if err != nil {
+			t.Fatalf("LoadConfigFromEnv() error = %v", err)
+		}
+		if cfg.LaunchMode != triptychtmux.LaunchModePlaceholder {
+			t.Fatalf("LaunchMode = %q", cfg.LaunchMode)
+		}
+		if cfg.Launch.Claude.SettingsFile != "/etc/triptych/claude-settings.json" {
+			t.Fatalf("Claude.SettingsFile = %q", cfg.Launch.Claude.SettingsFile)
 		}
 	})
 }
@@ -138,6 +193,80 @@ func TestLoadConfigFromEnvErrors(t *testing.T) {
 			},
 			hostFn:  func() (string, error) { return "host.local", nil },
 			wantErr: "TRIPTYCH_HEARTBEAT_INTERVAL must be positive",
+		},
+		{
+			name: "bad launch mode",
+			env: map[string]string{
+				"TRIPTYCH_HOST_ID":     "host-1",
+				"TRIPTYCH_LAUNCH_MODE": "bogus",
+			},
+			hostFn:  func() (string, error) { return "host.local", nil },
+			wantErr: "TRIPTYCH_LAUNCH_MODE",
+		},
+		{
+			name: "claude settings file must be absolute",
+			env: map[string]string{
+				"TRIPTYCH_HOST_ID":              "host-1",
+				"TRIPTYCH_CLAUDE_SETTINGS_FILE": "relative.json",
+			},
+			hostFn:  func() (string, error) { return "host.local", nil },
+			wantErr: "TRIPTYCH_CLAUDE_SETTINGS_FILE must be absolute",
+		},
+		{
+			name: "claude settings file conflicts with inline json",
+			env: map[string]string{
+				"TRIPTYCH_HOST_ID":              "host-1",
+				"TRIPTYCH_CLAUDE_SETTINGS_FILE": "/tmp/settings.json",
+				"TRIPTYCH_CLAUDE_SETTINGS_JSON": `{"trustedDirectories":["/tmp/repo"]}`,
+			},
+			hostFn:  func() (string, error) { return "host.local", nil },
+			wantErr: "mutually exclusive",
+		},
+		{
+			name: "claude settings json must be valid json",
+			env: map[string]string{
+				"TRIPTYCH_HOST_ID":              "host-1",
+				"TRIPTYCH_CLAUDE_SETTINGS_JSON": `{"theme":`,
+			},
+			hostFn:  func() (string, error) { return "host.local", nil },
+			wantErr: "TRIPTYCH_CLAUDE_SETTINGS_JSON must be valid JSON",
+		},
+		{
+			name: "claude trusted directories must be absolute",
+			env: map[string]string{
+				"TRIPTYCH_HOST_ID":                    "host-1",
+				"TRIPTYCH_CLAUDE_TRUSTED_DIRECTORIES": "/tmp/repo,relative",
+			},
+			hostFn:  func() (string, error) { return "host.local", nil },
+			wantErr: "TRIPTYCH_CLAUDE_TRUSTED_DIRECTORIES entries must be absolute",
+		},
+		{
+			name: "claude trusted directories conflict with settings file",
+			env: map[string]string{
+				"TRIPTYCH_HOST_ID":                    "host-1",
+				"TRIPTYCH_CLAUDE_SETTINGS_FILE":       "/tmp/settings.json",
+				"TRIPTYCH_CLAUDE_TRUSTED_DIRECTORIES": "/tmp/repo",
+			},
+			hostFn:  func() (string, error) { return "host.local", nil },
+			wantErr: "cannot be combined",
+		},
+		{
+			name: "bad claude startup handshake boolean",
+			env: map[string]string{
+				"TRIPTYCH_HOST_ID":                  "host-1",
+				"TRIPTYCH_CLAUDE_STARTUP_HANDSHAKE": "maybe",
+			},
+			hostFn:  func() (string, error) { return "host.local", nil },
+			wantErr: "TRIPTYCH_CLAUDE_STARTUP_HANDSHAKE",
+		},
+		{
+			name: "bad codex trust project boolean",
+			env: map[string]string{
+				"TRIPTYCH_HOST_ID":             "host-1",
+				"TRIPTYCH_CODEX_TRUST_PROJECT": "maybe",
+			},
+			hostFn:  func() (string, error) { return "host.local", nil },
+			wantErr: "TRIPTYCH_CODEX_TRUST_PROJECT",
 		},
 	}
 

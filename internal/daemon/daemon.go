@@ -48,6 +48,8 @@ func (r Runner) Run(ctx context.Context) error {
 	launcher := r.Launch
 	if launcher == nil {
 		defaultLauncher := triptychtmux.NewLauncher()
+		defaultLauncher.Mode = r.Config.LaunchMode
+		defaultLauncher.Config = r.Config.Launch
 		launcher = defaultLauncher
 	}
 	controller := r.Control
@@ -108,6 +110,7 @@ func (r Runner) pollAndExecute(ctx context.Context, launcher Launcher, controlle
 		result, err := launcher.Launch(ctx, triptychtmux.LaunchSpec{
 			RunID:   job.RunID,
 			JobID:   job.JobID,
+			Agent:   job.Agent,
 			Workdir: job.Workdir,
 			Goal:    job.Goal,
 		})
