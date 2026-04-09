@@ -4,7 +4,7 @@ Minimal initial Go skeleton for the Triptych control plane.
 
 Current scope:
 - `tt` CLI with read-only commands against the control-plane server
-- `agentd` daemon entrypoint
+- `agentd` daemon that registers a host and sends periodic heartbeats
 - `agentserver` HTTP server with host/job/run management APIs
 - shared domain types and request validation
 
@@ -26,3 +26,16 @@ Commands:
 
 Set `TRIPTYCH_SERVER_URL` to point at the server (default: `http://127.0.0.1:8080`).
 Use `--json` to get raw API data as pretty-printed JSON.
+
+## agentd
+
+`agentd` now performs Task 5 host registration and heartbeat against `agentserver`.
+
+Environment variables:
+- `TRIPTYCH_SERVER_URL` default `http://127.0.0.1:8080`
+- `TRIPTYCH_HOST_ID` required
+- `TRIPTYCH_HOSTNAME` default `os.Hostname()`
+- `TRIPTYCH_CAPABILITIES` optional comma-separated list
+- `TRIPTYCH_ALLOWED_REPO_ROOTS` optional comma-separated absolute paths
+- `TRIPTYCH_LABELS` optional comma-separated `key=value` pairs
+- `TRIPTYCH_HEARTBEAT_INTERVAL` default `15s`
