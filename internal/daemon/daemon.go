@@ -11,14 +11,22 @@ import (
 )
 
 type Runner struct {
-	Config Config
-	Client Client
-	Logger *slog.Logger
-	Launch Launcher
+	Config  Config
+	Client  Client
+	Logger  *slog.Logger
+	Launch  Launcher
+	Control TmuxController
 }
 
 type Launcher interface {
 	Launch(context.Context, triptychtmux.LaunchSpec) (triptychtmux.LaunchResult, error)
+}
+
+type TmuxController interface {
+	SendKeys(ctx context.Context, sessionName, windowName, text string) error
+	SendInterrupt(ctx context.Context, sessionName, windowName string) error
+	HasSession(ctx context.Context, sessionName string) (bool, error)
+	KillSession(ctx context.Context, sessionName string) (bool, error)
 }
 
 func (r Runner) Run(ctx context.Context) error {
@@ -34,6 +42,11 @@ func (r Runner) Run(ctx context.Context) error {
 	if launcher == nil {
 		defaultLauncher := triptychtmux.NewLauncher()
 		launcher = defaultLauncher
+	}
+	controller := r.Control
+	if controller == nil {
+		defaultController := triptychtmux.NewController()
+		controller = &defaultController
 	}
 
 	registration := HostRegistration{
@@ -61,18 +74,20 @@ func (r Runner) Run(ctx context.Context) error {
 				return fmt.Errorf("heartbeat: %w", err)
 			}
 			logger.Debug("heartbeat sent", "host_id", r.Config.HostID)
-			if err := r.pollAndLaunch(ctx, launcher, logger); err != nil {
+			if err := r.pollAndExecute(ctx, launcher, controller, logger); err != nil {
 				return err
 			}
 		}
 	}
 }
 
-func (r Runner) pollAndLaunch(ctx context.Context, launcher Launcher, logger *slog.Logger) error {
+func (r Runner) pollAndExecute(ctx context.Context, launcher Launcher, controller TmuxController, logger *slog.Logger) error {
 	work, err := r.Client.GetWork(ctx, r.Config.HostID)
 	if err != nil {
 		return fmt.Errorf("get work: %w", err)
 	}
+
+	// Launch new runs.
 	for _, job := range work.LaunchableJobs {
 		result, err := launcher.Launch(ctx, triptychtmux.LaunchSpec{
 			RunID:   job.RunID,
@@ -102,6 +117,174 @@ func (r Runner) pollAndLaunch(ctx context.Context, launcher Launcher, logger *sl
 			"created", result.Created,
 		)
 	}
+
+	// Build a lookup from run_id -> active run for resolving tmux targets.
+	activeByRun := make(map[domain.RunID]ActiveRun, len(work.ActiveRuns))
+	for _, ar := range work.ActiveRuns {
+		activeByRun[ar.RunID] = ar
+	}
+
+	// Reconcile active runs whose tmux sessions have disappeared.
+	for _, ar := range work.ActiveRuns {
+		if err := r.reconcileRun(ctx, ar, controller, logger); err != nil {
+			logger.Error("reconcile run failed", "run_id", ar.RunID, "error", err)
+		}
+	}
+
+	// Execute pending commands.
+	for _, cmd := range work.PendingCommands {
+		if err := r.executeCommand(ctx, cmd, activeByRun, controller, logger); err != nil {
+			logger.Error("command execution failed",
+				"command_id", cmd.CommandID,
+				"command_type", cmd.CommandType,
+				"error", err,
+			)
+		}
+	}
+
+	return nil
+}
+
+func (r Runner) executeCommand(ctx context.Context, cmd PendingCommand, activeByRun map[domain.RunID]ActiveRun, controller TmuxController, logger *slog.Logger) error {
+	// Ack immediately.
+	if err := r.Client.AckCommand(ctx, cmd.CommandID); err != nil {
+		return fmt.Errorf("ack command %s: %w", cmd.CommandID, err)
+	}
+
+	ar, ok := activeByRun[cmd.RunID]
+	if !ok {
+		logger.Warn("command references unknown active run, observing without action",
+			"command_id", cmd.CommandID,
+			"run_id", cmd.RunID,
+		)
+		return r.Client.ObserveCommand(ctx, cmd.CommandID)
+	}
+
+	sessionName := ar.SessionName()
+	windowName := ar.WindowName()
+	if windowName == "" {
+		windowName = triptychtmux.DefaultWindowName
+	}
+
+	var execErr error
+	switch cmd.CommandType {
+	case domain.CommandTypeSend:
+		text := ""
+		if cmd.Payload != nil {
+			text = cmd.Payload.Text
+		}
+		execErr = controller.SendKeys(ctx, sessionName, windowName, text)
+		if execErr == nil {
+			logger.Info("sent keys", "command_id", cmd.CommandID, "run_id", cmd.RunID)
+		}
+
+	case domain.CommandTypeInterrupt:
+		execErr = controller.SendInterrupt(ctx, sessionName, windowName)
+		if execErr == nil {
+			logger.Info("sent interrupt", "command_id", cmd.CommandID, "run_id", cmd.RunID)
+		}
+
+	case domain.CommandTypeStop:
+		execErr = r.executeStop(ctx, cmd, ar, controller, logger)
+
+	default:
+		logger.Warn("unknown command type", "command_type", cmd.CommandType, "command_id", cmd.CommandID)
+	}
+
+	if execErr != nil {
+		logger.Error("command action failed", "command_id", cmd.CommandID, "error", execErr)
+	}
+
+	// Observe regardless of action outcome — the daemon saw and attempted it.
+	if err := r.Client.ObserveCommand(ctx, cmd.CommandID); err != nil {
+		return fmt.Errorf("observe command %s: %w", cmd.CommandID, err)
+	}
+	return nil
+}
+
+func (r Runner) executeStop(ctx context.Context, cmd PendingCommand, ar ActiveRun, controller TmuxController, logger *slog.Logger) error {
+	// 1. Transition run to stopping.
+	if err := r.Client.UpdateRunState(ctx, ar.RunID, RunStateUpdate{
+		Status: domain.RunStatusStopping,
+	}); err != nil {
+		return fmt.Errorf("set run %s stopping: %w", ar.RunID, err)
+	}
+
+	// 2. Kill the tmux session.
+	killed, err := controller.KillSession(ctx, ar.SessionName())
+	if err != nil {
+		return fmt.Errorf("kill session for run %s: %w", ar.RunID, err)
+	}
+	logger.Info("stopped run", "run_id", ar.RunID, "session_killed", killed)
+
+	// 3. Mark the run as exited with cancelled disposition.
+	finishedAt := time.Now().UTC()
+	disposition := domain.TerminalDispositionCancelled
+	if err := r.Client.UpdateRunState(ctx, ar.RunID, RunStateUpdate{
+		Status:              domain.RunStatusExited,
+		FinishedAt:          &finishedAt,
+		TerminalDisposition: &disposition,
+	}); err != nil {
+		return fmt.Errorf("set run %s exited: %w", ar.RunID, err)
+	}
+
+	return nil
+}
+
+// reconcileRun checks whether the tmux session for an active run still exists.
+// If the session is gone, it repairs the run state on the server:
+//   - stop_requested or already stopping → exited + cancelled
+//   - otherwise → crashed + failed
+func (r Runner) reconcileRun(ctx context.Context, ar ActiveRun, controller TmuxController, logger *slog.Logger) error {
+	sessionName := ar.SessionName()
+	if sessionName == "" {
+		return nil
+	}
+
+	// Only reconcile runs the server considers live.
+	switch ar.RunStatus {
+	case domain.RunStatusActive, domain.RunStatusWaiting, domain.RunStatusStopping:
+		// eligible for reconciliation
+	default:
+		return nil
+	}
+
+	exists, err := controller.HasSession(ctx, sessionName)
+	if err != nil {
+		return fmt.Errorf("check session %q: %w", sessionName, err)
+	}
+	if exists {
+		return nil
+	}
+
+	// Session is gone — decide terminal state.
+	var (
+		status      domain.RunStatus
+		disposition domain.TerminalDisposition
+	)
+	if ar.StopRequested || ar.RunStatus == domain.RunStatusStopping {
+		status = domain.RunStatusExited
+		disposition = domain.TerminalDispositionCancelled
+	} else {
+		status = domain.RunStatusCrashed
+		disposition = domain.TerminalDispositionFailed
+	}
+
+	finishedAt := time.Now().UTC()
+	if err := r.Client.UpdateRunState(ctx, ar.RunID, RunStateUpdate{
+		Status:              status,
+		FinishedAt:          &finishedAt,
+		TerminalDisposition: &disposition,
+	}); err != nil {
+		return fmt.Errorf("reconcile run %s to %s: %w", ar.RunID, status, err)
+	}
+
+	logger.Info("reconciled missing tmux session",
+		"run_id", ar.RunID,
+		"session", sessionName,
+		"status", status,
+		"disposition", disposition,
+	)
 	return nil
 }
 

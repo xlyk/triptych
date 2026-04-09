@@ -18,6 +18,8 @@ type Client interface {
 	Heartbeat(context.Context, domain.HostID) error
 	GetWork(context.Context, domain.HostID) (*Work, error)
 	UpdateRunState(context.Context, domain.RunID, RunStateUpdate) error
+	AckCommand(context.Context, domain.CommandID) error
+	ObserveCommand(context.Context, domain.CommandID) error
 }
 
 type HostRegistration struct {
@@ -29,10 +31,41 @@ type HostRegistration struct {
 }
 
 type Work struct {
-	HostID          domain.HostID     `json:"host_id"`
-	LaunchableJobs  []LaunchableJob   `json:"launchable_jobs"`
-	ActiveRuns      []json.RawMessage `json:"active_runs"`
-	PendingCommands []json.RawMessage `json:"pending_commands"`
+	HostID          domain.HostID    `json:"host_id"`
+	LaunchableJobs  []LaunchableJob  `json:"launchable_jobs"`
+	ActiveRuns      []ActiveRun      `json:"active_runs"`
+	PendingCommands []PendingCommand `json:"pending_commands"`
+}
+
+type ActiveRun struct {
+	RunID         domain.RunID     `json:"run_id"`
+	JobID         domain.JobID     `json:"job_id"`
+	RunStatus     domain.RunStatus `json:"run_status"`
+	Tmux          TmuxRef          `json:"tmux"`
+	StopRequested bool             `json:"stop_requested"`
+}
+
+// SessionName returns the tmux session name for this run.
+func (ar ActiveRun) SessionName() string { return ar.Tmux.SessionName }
+
+// WindowName returns the tmux window name for this run.
+func (ar ActiveRun) WindowName() string { return ar.Tmux.WindowName }
+
+type TmuxRef struct {
+	SessionName string `json:"session_name,omitempty"`
+	WindowName  string `json:"window_name,omitempty"`
+}
+
+type PendingCommand struct {
+	CommandID   domain.CommandID   `json:"command_id"`
+	RunID       domain.RunID       `json:"run_id"`
+	CommandType domain.CommandType `json:"command_type"`
+	Payload     *CommandPayload    `json:"payload,omitempty"`
+	CreatedAt   time.Time          `json:"created_at"`
+}
+
+type CommandPayload struct {
+	Text string `json:"text,omitempty"`
 }
 
 type LaunchableJob struct {
@@ -47,10 +80,12 @@ type LaunchableJob struct {
 }
 
 type RunStateUpdate struct {
-	Status          domain.RunStatus `json:"status"`
-	TmuxSessionName *string          `json:"tmux_session_name,omitempty"`
-	TmuxWindowName  *string          `json:"tmux_window_name,omitempty"`
-	StartedAt       *time.Time       `json:"started_at,omitempty"`
+	Status              domain.RunStatus            `json:"status"`
+	TmuxSessionName     *string                     `json:"tmux_session_name,omitempty"`
+	TmuxWindowName      *string                     `json:"tmux_window_name,omitempty"`
+	StartedAt           *time.Time                  `json:"started_at,omitempty"`
+	FinishedAt          *time.Time                  `json:"finished_at,omitempty"`
+	TerminalDisposition *domain.TerminalDisposition `json:"terminal_disposition,omitempty"`
 }
 
 type HTTPClient struct {
@@ -97,6 +132,14 @@ func (c *HTTPClient) GetWork(ctx context.Context, hostID domain.HostID) (*Work, 
 
 func (c *HTTPClient) UpdateRunState(ctx context.Context, runID domain.RunID, update RunStateUpdate) error {
 	return c.postJSON(ctx, "/v1/runs/"+runID.String()+"/state", update)
+}
+
+func (c *HTTPClient) AckCommand(ctx context.Context, commandID domain.CommandID) error {
+	return c.postJSON(ctx, "/v1/commands/"+commandID.String()+"/ack", nil)
+}
+
+func (c *HTTPClient) ObserveCommand(ctx context.Context, commandID domain.CommandID) error {
+	return c.postJSON(ctx, "/v1/commands/"+commandID.String()+"/observe", nil)
 }
 
 type registerHostRequest struct {

@@ -193,6 +193,56 @@ func TestHTTPClientUpdateRunState(t *testing.T) {
 	}
 }
 
+func TestHTTPClientAckCommand(t *testing.T) {
+	var captured *http.Request
+
+	c := NewHTTPClient("http://example.test", &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			captured = req
+			return jsonResponse(http.StatusOK, `{"ok":true}`), nil
+		}),
+	})
+
+	if err := c.AckCommand(context.Background(), "cmd-abc123"); err != nil {
+		t.Fatalf("AckCommand() error = %v", err)
+	}
+
+	if captured == nil {
+		t.Fatal("expected request")
+	}
+	if captured.Method != http.MethodPost {
+		t.Fatalf("method = %s, want POST", captured.Method)
+	}
+	if captured.URL.String() != "http://example.test/v1/commands/cmd-abc123/ack" {
+		t.Fatalf("url = %s", captured.URL.String())
+	}
+}
+
+func TestHTTPClientObserveCommand(t *testing.T) {
+	var captured *http.Request
+
+	c := NewHTTPClient("http://example.test", &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			captured = req
+			return jsonResponse(http.StatusOK, `{"ok":true}`), nil
+		}),
+	})
+
+	if err := c.ObserveCommand(context.Background(), "cmd-abc123"); err != nil {
+		t.Fatalf("ObserveCommand() error = %v", err)
+	}
+
+	if captured == nil {
+		t.Fatal("expected request")
+	}
+	if captured.Method != http.MethodPost {
+		t.Fatalf("method = %s, want POST", captured.Method)
+	}
+	if captured.URL.String() != "http://example.test/v1/commands/cmd-abc123/observe" {
+		t.Fatalf("url = %s", captured.URL.String())
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {

@@ -29,7 +29,7 @@ Use `--json` to get raw API data as pretty-printed JSON.
 
 ## agentd
 
-`agentd` now performs Task 6 host registration, heartbeat, work polling, and real detached tmux session launch for attach testing.
+`agentd` now performs Task 6 host registration, heartbeat, work polling, and real detached tmux session launch for attach testing. On each poll tick, the daemon reconciles active runs against tmux reality: if a run's tmux session has disappeared, the daemon repairs the run state on the server (crashed/failed if unexpected, exited/cancelled if a stop was requested or the run was already stopping).
 
 Environment variables:
 - `TRIPTYCH_SERVER_URL` default `http://127.0.0.1:8080`
