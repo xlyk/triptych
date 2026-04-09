@@ -2,6 +2,7 @@
 package client
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -50,9 +51,35 @@ func New(baseURL string) *Client {
 
 // Get performs a GET request to the given path and returns the raw data payload.
 func (c *Client) Get(path string) (json.RawMessage, error) {
+	return c.doJSON(http.MethodGet, path, nil)
+}
+
+// Post performs a POST request to the given path and returns the raw data payload.
+func (c *Client) Post(path string, body any) (json.RawMessage, error) {
+	return c.doJSON(http.MethodPost, path, body)
+}
+
+func (c *Client) doJSON(method, path string, body any) (json.RawMessage, error) {
 	url := c.BaseURL + path
 
-	resp, err := c.HTTPClient.Get(url)
+	var bodyReader io.Reader
+	if body != nil {
+		buf := &bytes.Buffer{}
+		if err := json.NewEncoder(buf).Encode(body); err != nil {
+			return nil, fmt.Errorf("encoding request: %w", err)
+		}
+		bodyReader = buf
+	}
+
+	req, err := http.NewRequest(method, url, bodyReader)
+	if err != nil {
+		return nil, fmt.Errorf("building request: %w", err)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
@@ -60,15 +87,15 @@ func (c *Client) Get(path string) (json.RawMessage, error) {
 		_ = resp.Body.Close()
 	}()
 
-	body, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("reading response: %w", err)
 	}
 
 	var env Envelope
-	if err := json.Unmarshal(body, &env); err != nil {
+	if err := json.Unmarshal(respBody, &env); err != nil {
 		// Non-JSON response (e.g. connection refused proxy page).
-		return nil, fmt.Errorf("server returned non-JSON (HTTP %d): %s", resp.StatusCode, truncate(string(body), 200))
+		return nil, fmt.Errorf("server returned non-JSON (HTTP %d): %s", resp.StatusCode, truncate(string(respBody), 200))
 	}
 
 	if !env.OK {

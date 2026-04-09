@@ -3,14 +3,14 @@
 Minimal initial Go skeleton for the Triptych control plane.
 
 Current scope:
-- `tt` CLI with read-only commands against the control-plane server
+- `tt` CLI with basic read/write operator commands against the control-plane server
 - `agentd` daemon that registers a host, sends periodic heartbeats, and launches placeholder tmux-backed runs for attach testing
 - `agentserver` HTTP server with host/job/run management APIs
 - shared domain types and request validation
 
 ## tt CLI
 
-Read-only commands for querying the Triptych control plane.
+Basic operator commands for querying the Triptych control plane and pushing job actions.
 
 ```
 tt [--json] <resource> <action> [args...]
@@ -22,10 +22,26 @@ Commands:
   jobs  get <job-id>          Show details for a job
   jobs  tail <job-id>         Show latest output snapshot
   jobs  attach <job-id>       Show tmux attach info
+  jobs  create --host <host-id> --agent <agent> --repo <repo-path> --goal <goal>
+                              Create a job on a host
+  jobs  send <job-id> <text>  Queue input text for a job
+  jobs  interrupt <job-id>    Queue Ctrl-C for a job
+  jobs  stop <job-id>         Queue stop for a job
 ```
 
 Set `TRIPTYCH_SERVER_URL` to point at the server (default: `http://127.0.0.1:8080`).
 Use `--json` to get raw API data as pretty-printed JSON.
+
+Typical operator loop:
+
+```
+tt jobs create --host host-1 --agent codex --repo /abs/path/to/repo --goal "Fix the failing tests"
+tt jobs list
+tt jobs tail <job-id>
+tt jobs send <job-id> "continue with the refactor"
+tt jobs interrupt <job-id>
+tt jobs stop <job-id>
+```
 
 ## agentd
 

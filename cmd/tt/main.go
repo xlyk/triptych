@@ -55,46 +55,56 @@ func run(args []string, stdout, stderr io.Writer) int {
 		data, err = c.Get("/v1/hosts")
 	case "hosts get":
 		if len(rest) < 1 {
-			if err := writeLine(stderr, "usage: tt hosts get <host-id>"); err != nil {
-				return 1
-			}
-			return 1
+			err = usageError("usage: tt hosts get <host-id>")
+			break
 		}
 		data, err = c.Get("/v1/hosts/" + rest[0])
 	case "jobs list":
 		data, err = c.Get("/v1/jobs")
 	case "jobs get":
 		if len(rest) < 1 {
-			if err := writeLine(stderr, "usage: tt jobs get <job-id>"); err != nil {
-				return 1
-			}
-			return 1
+			err = usageError("usage: tt jobs get <job-id>")
+			break
 		}
 		data, err = c.Get("/v1/jobs/" + rest[0])
 	case "jobs tail":
 		if len(rest) < 1 {
-			if err := writeLine(stderr, "usage: tt jobs tail <job-id>"); err != nil {
-				return 1
-			}
-			return 1
+			err = usageError("usage: tt jobs tail <job-id>")
+			break
 		}
 		data, err = c.Get("/v1/jobs/" + rest[0] + "/tail")
 	case "jobs attach":
 		if len(rest) < 1 {
-			if err := writeLine(stderr, "usage: tt jobs attach <job-id>"); err != nil {
+			err = usageError("usage: tt jobs attach <job-id>")
+			break
+		}
+		data, err = c.Get("/v1/jobs/" + rest[0] + "/attach")
+	case "jobs create":
+		data, err = runJobsCreate(c, rest)
+	case "jobs send":
+		data, err = runJobsSend(c, rest)
+	case "jobs interrupt":
+		data, err = runJobsInterrupt(c, rest)
+	case "jobs stop":
+		data, err = runJobsStop(c, rest)
+	default:
+		err = usageError(usage())
+	}
+
+	if err != nil {
+		msg := err.Error()
+		if isUsageError(err) && msg == usage() {
+			if writeErr := writeLine(stderr, msg); writeErr != nil {
 				return 1
 			}
 			return 1
 		}
-		data, err = c.Get("/v1/jobs/" + rest[0] + "/attach")
-	default:
-		if err := writeLine(stderr, usage()); err != nil {
+		if isUsageError(err) {
+			if writeErr := writeLine(stderr, msg); writeErr != nil {
+				return 1
+			}
 			return 1
 		}
-		return 1
-	}
-
-	if err != nil {
 		if writeErr := writef(stderr, "error: %v\n", err); writeErr != nil {
 			return 1
 		}
@@ -125,6 +135,118 @@ func run(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+func runJobsCreate(c *client.Client, args []string) (json.RawMessage, error) {
+	opts, pos, err := parseOptions(args, map[string]*string{
+		"agent":           nil,
+		"host":            nil,
+		"repo":            nil,
+		"goal":            nil,
+		"workdir":         nil,
+		"priority":        nil,
+		"max-duration":    nil,
+		"idempotency-key": nil,
+	})
+	if err != nil {
+		return nil, usageError("usage: tt jobs create --host <host-id> --agent <agent> --repo <repo-path> --goal <goal> [--workdir <workdir>] [--priority <priority>] [--max-duration <duration>] [--idempotency-key <key>]")
+	}
+	if len(pos) != 0 {
+		return nil, usageError("usage: tt jobs create --host <host-id> --agent <agent> --repo <repo-path> --goal <goal> [--workdir <workdir>] [--priority <priority>] [--max-duration <duration>] [--idempotency-key <key>]")
+	}
+	if opts["host"] == "" || opts["agent"] == "" || opts["repo"] == "" || opts["goal"] == "" {
+		return nil, usageError("usage: tt jobs create --host <host-id> --agent <agent> --repo <repo-path> --goal <goal> [--workdir <workdir>] [--priority <priority>] [--max-duration <duration>] [--idempotency-key <key>]")
+	}
+
+	req := map[string]any{
+		"host_id":   opts["host"],
+		"agent":     opts["agent"],
+		"repo_path": opts["repo"],
+		"goal":      opts["goal"],
+	}
+	if opts["workdir"] != "" {
+		req["workdir"] = opts["workdir"]
+	}
+	if opts["priority"] != "" {
+		req["priority"] = opts["priority"]
+	}
+	if opts["max-duration"] != "" {
+		req["max_duration"] = opts["max-duration"]
+	}
+	if opts["idempotency-key"] != "" {
+		req["idempotency_key"] = opts["idempotency-key"]
+	}
+
+	return c.Post("/v1/jobs", req)
+}
+
+func runJobsSend(c *client.Client, args []string) (json.RawMessage, error) {
+	opts, pos, err := parseOptions(args, map[string]*string{"idempotency-key": nil})
+	if err != nil || len(pos) < 2 {
+		return nil, usageError("usage: tt jobs send [--idempotency-key <key>] <job-id> <text>")
+	}
+	req := map[string]any{"text": strings.Join(pos[1:], " ")}
+	if opts["idempotency-key"] != "" {
+		req["idempotency_key"] = opts["idempotency-key"]
+	}
+	return c.Post("/v1/jobs/"+pos[0]+"/commands/send", req)
+}
+
+func runJobsInterrupt(c *client.Client, args []string) (json.RawMessage, error) {
+	return runCommandWithoutText(c, args, "interrupt")
+}
+
+func runJobsStop(c *client.Client, args []string) (json.RawMessage, error) {
+	return runCommandWithoutText(c, args, "stop")
+}
+
+func runCommandWithoutText(c *client.Client, args []string, action string) (json.RawMessage, error) {
+	opts, pos, err := parseOptions(args, map[string]*string{"idempotency-key": nil})
+	if err != nil || len(pos) != 1 {
+		return nil, usageError(fmt.Sprintf("usage: tt jobs %s [--idempotency-key <key>] <job-id>", action))
+	}
+	var req map[string]any
+	if opts["idempotency-key"] != "" {
+		req = map[string]any{"idempotency_key": opts["idempotency-key"]}
+	}
+	return c.Post("/v1/jobs/"+pos[0]+"/commands/"+action, req)
+}
+
+func parseOptions(args []string, known map[string]*string) (map[string]string, []string, error) {
+	values := make(map[string]string, len(known))
+	positionals := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if !strings.HasPrefix(arg, "--") || arg == "--" {
+			positionals = append(positionals, arg)
+			continue
+		}
+		nameValue := strings.TrimPrefix(arg, "--")
+		name, value, hasValue := strings.Cut(nameValue, "=")
+		if _, ok := known[name]; !ok {
+			return nil, nil, fmt.Errorf("unknown flag: --%s", name)
+		}
+		if !hasValue {
+			i++
+			if i >= len(args) {
+				return nil, nil, fmt.Errorf("missing value for --%s", name)
+			}
+			value = args[i]
+		}
+		values[name] = value
+	}
+	return values, positionals, nil
+}
+
+type usageErr struct{ msg string }
+
+func (e usageErr) Error() string { return e.msg }
+
+func usageError(msg string) error { return usageErr{msg: msg} }
+
+func isUsageError(err error) bool {
+	_, ok := err.(usageErr)
+	return ok
+}
+
 func prettyJSON(raw json.RawMessage) (string, error) {
 	var v any
 	if err := json.Unmarshal(raw, &v); err != nil {
@@ -151,12 +273,15 @@ func formatHuman(w io.Writer, cmd string, data json.RawMessage) error {
 		return formatJobTail(w, data)
 	case "jobs attach":
 		return formatJobAttach(w, data)
+	case "jobs create":
+		return formatJobCreate(w, data)
+	case "jobs send", "jobs interrupt", "jobs stop":
+		return formatCommandCreate(w, cmd, data)
 	default:
 		return writeLine(w, string(data))
 	}
 }
 
-// host types matching server response shapes.
 type hostEntry struct {
 	HostID          string `json:"host_id"`
 	Hostname        string `json:"hostname"`
@@ -166,17 +291,19 @@ type hostEntry struct {
 }
 
 func formatHostsList(w io.Writer, data json.RawMessage) error {
-	var hosts []hostEntry
-	if err := json.Unmarshal(data, &hosts); err != nil {
+	var resp struct {
+		Hosts []hostEntry `json:"hosts"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
 		return err
 	}
-	if len(hosts) == 0 {
+	if len(resp.Hosts) == 0 {
 		return writeLine(w, "No hosts registered.")
 	}
 	if err := writef(w, "%-20s %-20s %s\n", "HOST ID", "HOSTNAME", "HEALTH"); err != nil {
 		return err
 	}
-	for _, h := range hosts {
+	for _, h := range resp.Hosts {
 		health := h.Health
 		if health == "" {
 			if h.Online {
@@ -193,10 +320,13 @@ func formatHostsList(w io.Writer, data json.RawMessage) error {
 }
 
 func formatHostGet(w io.Writer, data json.RawMessage) error {
-	var h hostEntry
-	if err := json.Unmarshal(data, &h); err != nil {
+	var resp struct {
+		Host hostEntry `json:"host"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
 		return err
 	}
+	h := resp.Host
 	health := h.Health
 	if health == "" {
 		if h.Online {
@@ -214,30 +344,45 @@ func formatHostGet(w io.Writer, data json.RawMessage) error {
 	return writef(w, "Health:   %s\n", health)
 }
 
+type runEntry struct {
+	RunID         string `json:"run_id"`
+	Status        string `json:"status"`
+	StopRequested bool   `json:"stop_requested"`
+}
+
+type job struct {
+	JobID          string `json:"job_id"`
+	HostID         string `json:"host_id"`
+	Agent          string `json:"agent"`
+	Status         string `json:"status"`
+	Goal           string `json:"goal"`
+	RepoPath       string `json:"repo_path"`
+	Workdir        string `json:"workdir"`
+	Priority       string `json:"priority"`
+	MaxDuration    string `json:"max_duration"`
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
 type jobEntry struct {
-	Job struct {
-		JobID    string `json:"job_id"`
-		HostID   string `json:"host_id"`
-		Agent    string `json:"agent"`
-		Status   string `json:"status"`
-		Goal     string `json:"goal"`
-		RepoPath string `json:"repo_path"`
-	} `json:"job"`
-	HostHealth string `json:"host_health"`
+	Job        job       `json:"job"`
+	Run        *runEntry `json:"run,omitempty"`
+	HostHealth string    `json:"host_health"`
 }
 
 func formatJobsList(w io.Writer, data json.RawMessage) error {
-	var jobs []jobEntry
-	if err := json.Unmarshal(data, &jobs); err != nil {
+	var resp struct {
+		Jobs []jobEntry `json:"jobs"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
 		return err
 	}
-	if len(jobs) == 0 {
+	if len(resp.Jobs) == 0 {
 		return writeLine(w, "No jobs found.")
 	}
 	if err := writef(w, "%-20s %-12s %-10s %s\n", "JOB ID", "STATUS", "AGENT", "GOAL"); err != nil {
 		return err
 	}
-	for _, j := range jobs {
+	for _, j := range resp.Jobs {
 		goal := truncateStr(j.Job.Goal, 50)
 		if err := writef(w, "%-20s %-12s %-10s %s\n", j.Job.JobID, j.Job.Status, j.Job.Agent, goal); err != nil {
 			return err
@@ -260,6 +405,11 @@ func formatJobGet(w io.Writer, data json.RawMessage) error {
 	if err := writef(w, "Status:   %s\n", j.Job.Status); err != nil {
 		return err
 	}
+	if j.Run != nil {
+		if err := writef(w, "Run:      %s (%s)\n", j.Run.RunID, j.Run.Status); err != nil {
+			return err
+		}
+	}
 	if err := writef(w, "Agent:    %s\n", j.Job.Agent); err != nil {
 		return err
 	}
@@ -270,6 +420,25 @@ func formatJobGet(w io.Writer, data json.RawMessage) error {
 		return err
 	}
 	return writef(w, "Goal:     %s\n", j.Job.Goal)
+}
+
+type createJobEntry struct {
+	Job job `json:"job"`
+	Run struct {
+		RunID  string `json:"run_id"`
+		Status string `json:"status"`
+	} `json:"run"`
+}
+
+func formatJobCreate(w io.Writer, data json.RawMessage) error {
+	var resp createJobEntry
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return err
+	}
+	if err := writef(w, "Created job %s on %s (%s)\n", resp.Job.JobID, resp.Job.HostID, resp.Job.Agent); err != nil {
+		return err
+	}
+	return writef(w, "Run: %s %s\n", resp.Run.RunID, resp.Run.Status)
 }
 
 type tailEntry struct {
@@ -328,6 +497,24 @@ func formatJobAttach(w io.Writer, data json.RawMessage) error {
 	return writef(w, "\nTo attach:\n  %s\n", a.Attach.Command)
 }
 
+type commandEntry struct {
+	Command struct {
+		CommandID   string `json:"command_id"`
+		JobID       string `json:"job_id"`
+		CommandType string `json:"command_type"`
+		State       string `json:"state"`
+	} `json:"command"`
+}
+
+func formatCommandCreate(w io.Writer, cmd string, data json.RawMessage) error {
+	var resp commandEntry
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return err
+	}
+	action := strings.TrimPrefix(cmd, "jobs ")
+	return writef(w, "Queued %s %s for job %s (%s)\n", action, resp.Command.CommandID, resp.Command.JobID, resp.Command.State)
+}
+
 func truncateStr(s string, n int) string {
 	if len(s) <= n {
 		return s
@@ -357,6 +544,11 @@ Commands:
   jobs  get <job-id>          Show details for a job
   jobs  tail <job-id>         Show latest output snapshot for a job
   jobs  attach <job-id>       Show attach info (tmux session) for a job
+  jobs  create --host <host-id> --agent <agent> --repo <repo-path> --goal <goal>
+                              Create a job on a host
+  jobs  send <job-id> <text>  Queue input text for a job
+  jobs  interrupt <job-id>    Queue Ctrl-C for a job
+  jobs  stop <job-id>         Queue stop for a job
 
 Flags:
   --json    Print raw API data as pretty JSON
