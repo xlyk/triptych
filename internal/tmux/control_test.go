@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestControllerSendKeys(t *testing.T) {
+func TestControllerSendKeysClearsPromptAndSendsLiteralText(t *testing.T) {
 	t.Parallel()
 	runner := &recordingRunner{}
 	ctrl := NewControllerWithRunner(runner)
@@ -17,13 +17,18 @@ func TestControllerSendKeys(t *testing.T) {
 		t.Fatalf("SendKeys() error = %v", err)
 	}
 
-	if len(runner.calls) != 1 {
-		t.Fatalf("calls = %d, want 1", len(runner.calls))
+	if len(runner.calls) != 3 {
+		t.Fatalf("calls = %d, want 3", len(runner.calls))
 	}
-	got := runner.calls[0]
-	want := "tmux send-keys -t sess-1:main hello world Enter"
-	if got != want {
-		t.Fatalf("call = %q, want %q", got, want)
+	want := []string{
+		"tmux send-keys -t sess-1:main C-u",
+		"tmux send-keys -t sess-1:main -l hello world",
+		"tmux send-keys -t sess-1:main Enter",
+	}
+	for i, got := range runner.calls {
+		if got != want[i] {
+			t.Fatalf("call[%d] = %q, want %q", i, got, want[i])
+		}
 	}
 }
 

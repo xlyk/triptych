@@ -20,14 +20,21 @@ func NewControllerWithRunner(runner CommandRunner) Controller {
 	return Controller{runner: runner}
 }
 
-// SendKeys sends text followed by Enter to the given tmux target.
+// SendKeys clears any partially buffered prompt input, sends text literally,
+// then submits it with Enter.
 func (c Controller) SendKeys(ctx context.Context, sessionName, windowName, text string) error {
 	if c.runner == nil {
 		c.runner = execRunner{}
 	}
 	target := sessionName + ":" + windowName
-	if err := c.runner.Run(ctx, "tmux", "send-keys", "-t", target, text, "Enter"); err != nil {
-		return fmt.Errorf("send-keys to %q: %w", target, err)
+	if err := c.runner.Run(ctx, "tmux", "send-keys", "-t", target, "C-u"); err != nil {
+		return fmt.Errorf("clear prompt in %q: %w", target, err)
+	}
+	if err := c.runner.Run(ctx, "tmux", "send-keys", "-t", target, "-l", text); err != nil {
+		return fmt.Errorf("send literal text to %q: %w", target, err)
+	}
+	if err := c.runner.Run(ctx, "tmux", "send-keys", "-t", target, "Enter"); err != nil {
+		return fmt.Errorf("send Enter to %q: %w", target, err)
 	}
 	return nil
 }
