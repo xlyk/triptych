@@ -135,7 +135,7 @@ func TestJobsList(t *testing.T) {
 
 func TestJobsGet(t *testing.T) {
 	srv := fakeServer(t, map[string]string{
-		"GET /v1/jobs/j-1": `{"ok":true,"data":{"job":{"job_id":"j-1","host_id":"h-1","agent":"claude","status":"queued","goal":"refactor","repo_path":"/repo"},"host_health":"online"}}`,
+		"GET /v1/jobs/j-1": `{"ok":true,"data":{"job":{"job":{"job_id":"j-1","host_id":"h-1","agent":"claude","status":"queued","goal":"refactor","repo_path":"/repo"},"host_health":"online"}}}`,
 	})
 	defer srv.Close()
 
@@ -143,8 +143,14 @@ func TestJobsGet(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d", code)
 	}
-	if !strings.Contains(stdout, "j-1") {
-		t.Errorf("expected job id: %s", stdout)
+	if !strings.Contains(stdout, "Job:      j-1") {
+		t.Errorf("expected formatted job id: %s", stdout)
+	}
+	if !strings.Contains(stdout, "Status:   queued") {
+		t.Errorf("expected formatted status: %s", stdout)
+	}
+	if !strings.Contains(stdout, "Goal:     refactor") {
+		t.Errorf("expected formatted goal: %s", stdout)
 	}
 }
 

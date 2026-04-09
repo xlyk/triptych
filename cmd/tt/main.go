@@ -247,10 +247,13 @@ func formatJobsList(w io.Writer, data json.RawMessage) error {
 }
 
 func formatJobGet(w io.Writer, data json.RawMessage) error {
-	var j jobEntry
-	if err := json.Unmarshal(data, &j); err != nil {
+	var resp struct {
+		Job jobEntry `json:"job"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
 		return err
 	}
+	j := resp.Job
 	if err := writef(w, "Job:      %s\n", j.Job.JobID); err != nil {
 		return err
 	}
