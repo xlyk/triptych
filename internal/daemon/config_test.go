@@ -11,6 +11,7 @@ import (
 func TestLoadConfigFromEnv(t *testing.T) {
 	t.Run("defaults and parsing", func(t *testing.T) {
 		env := map[string]string{
+			"HOME":                        "/tmp/home",
 			"TRIPTYCH_HOST_ID":            "host-1",
 			"TRIPTYCH_CAPABILITIES":       "codex, tmux ,",
 			"TRIPTYCH_ALLOWED_REPO_ROOTS": "/tmp/repo1, /tmp/repo2",
@@ -43,6 +44,9 @@ func TestLoadConfigFromEnv(t *testing.T) {
 		if !reflect.DeepEqual(cfg.Labels, map[string]string{"env": "dev", "region": "local"}) {
 			t.Fatalf("Labels = %#v", cfg.Labels)
 		}
+		if cfg.StateDir != "/tmp/home/.triptych" {
+			t.Fatalf("StateDir = %q, want %q", cfg.StateDir, "/tmp/home/.triptych")
+		}
 		if cfg.HeartbeatInterval != 30*time.Second {
 			t.Fatalf("HeartbeatInterval = %s, want %s", cfg.HeartbeatInterval, 30*time.Second)
 		}
@@ -53,6 +57,7 @@ func TestLoadConfigFromEnv(t *testing.T) {
 			"TRIPTYCH_SERVER_URL": "http://example.test:8080/",
 			"TRIPTYCH_HOST_ID":    "host-2",
 			"TRIPTYCH_HOSTNAME":   "agent-box",
+			"TRIPTYCH_STATE_DIR":  "/var/lib/triptych",
 		}
 
 		cfg, err := LoadConfigFromEnv(func(key string) string { return env[key] }, func() (string, error) {
@@ -67,6 +72,9 @@ func TestLoadConfigFromEnv(t *testing.T) {
 		}
 		if cfg.Hostname != "agent-box" {
 			t.Fatalf("Hostname = %q", cfg.Hostname)
+		}
+		if cfg.StateDir != "/var/lib/triptych" {
+			t.Fatalf("StateDir = %q", cfg.StateDir)
 		}
 		if cfg.HeartbeatInterval != DefaultHeartbeatInterval {
 			t.Fatalf("HeartbeatInterval = %s, want %s", cfg.HeartbeatInterval, DefaultHeartbeatInterval)

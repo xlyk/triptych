@@ -22,6 +22,7 @@ type Config struct {
 	Capabilities      []string
 	AllowedRepoRoots  []string
 	Labels            map[string]string
+	StateDir          string
 	HeartbeatInterval time.Duration
 }
 
@@ -33,6 +34,7 @@ func LoadConfigFromEnv(getenv func(string) string, hostname func() (string, erro
 	cfg := Config{
 		ServerURL:         DefaultServerURL,
 		Labels:            map[string]string{},
+		StateDir:          defaultStateDir(getenv),
 		HeartbeatInterval: DefaultHeartbeatInterval,
 	}
 
@@ -72,6 +74,10 @@ func LoadConfigFromEnv(getenv func(string) string, hostname func() (string, erro
 	}
 	cfg.Labels = labels
 
+	if raw := strings.TrimSpace(getenv("TRIPTYCH_STATE_DIR")); raw != "" {
+		cfg.StateDir = filepath.Clean(raw)
+	}
+
 	if raw := strings.TrimSpace(getenv("TRIPTYCH_HEARTBEAT_INTERVAL")); raw != "" {
 		interval, err := time.ParseDuration(raw)
 		if err != nil {
@@ -84,6 +90,14 @@ func LoadConfigFromEnv(getenv func(string) string, hostname func() (string, erro
 	}
 
 	return cfg, nil
+}
+
+func defaultStateDir(getenv func(string) string) string {
+	home := strings.TrimSpace(getenv("HOME"))
+	if home == "" {
+		return filepath.Clean(".triptych")
+	}
+	return filepath.Join(home, ".triptych")
 }
 
 func splitCSV(raw string) []string {

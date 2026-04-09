@@ -396,6 +396,40 @@ func TestCommandIdempotency(t *testing.T) {
 	}
 }
 
+func TestListPendingCommandsByHostIncludesAcknowledgedUntilObserved(t *testing.T) {
+	s := testPool(t)
+	ctx := context.Background()
+
+	h := &domain.Host{HostID: "host-p", Hostname: "t.local", Capabilities: []string{}, AllowedRepoRoots: []string{}, Labels: map[string]string{}}
+	_ = s.CreateHost(ctx, h)
+	j := &domain.Job{JobID: "job-p", HostID: "host-p", Agent: domain.AgentClaude, Status: domain.JobStatusRunning, RepoPath: "/r", Workdir: "/r", Goal: "g", Priority: domain.PriorityNormal, MaxDuration: "1h", Metadata: map[string]string{}}
+	_ = s.CreateJob(ctx, j)
+	r := &domain.Run{RunID: "run-p", JobID: "job-p", HostID: "host-p", Status: domain.RunStatusActive}
+	_ = s.CreateRun(ctx, r)
+
+	commands := []*domain.Command{
+		{CommandID: "cmd-p-1", JobID: "job-p", RunID: "run-p", HostID: "host-p", CommandType: domain.CommandTypeSend, State: domain.CommandStateRecorded},
+		{CommandID: "cmd-p-2", JobID: "job-p", RunID: "run-p", HostID: "host-p", CommandType: domain.CommandTypeInterrupt, State: domain.CommandStateAcknowledged},
+		{CommandID: "cmd-p-3", JobID: "job-p", RunID: "run-p", HostID: "host-p", CommandType: domain.CommandTypeStop, State: domain.CommandStateObserved},
+	}
+	for _, cmd := range commands {
+		if err := s.CreateCommand(ctx, cmd); err != nil {
+			t.Fatalf("create command %s: %v", cmd.CommandID, err)
+		}
+	}
+
+	pending, err := s.ListPendingCommandsByHost(ctx, "host-p")
+	if err != nil {
+		t.Fatalf("list pending commands: %v", err)
+	}
+	if len(pending) != 2 {
+		t.Fatalf("pending commands len = %d, want 2", len(pending))
+	}
+	if pending[0].CommandID != "cmd-p-1" || pending[1].CommandID != "cmd-p-2" {
+		t.Fatalf("pending command ids = [%s %s], want [cmd-p-1 cmd-p-2]", pending[0].CommandID, pending[1].CommandID)
+	}
+}
+
 func TestEventCRUD(t *testing.T) {
 	s := testPool(t)
 	ctx := context.Background()

@@ -599,7 +599,7 @@ func (s *Store) ListPendingCommandsByHost(ctx context.Context, hostID domain.Hos
 	rows, err := s.pool.Query(ctx, `
 		SELECT command_id, job_id, run_id, host_id, command_type, request_idempotency_key, payload_json, state, created_at, updated_at
 		FROM commands
-		WHERE host_id = $1 AND state = 'recorded'
+		WHERE host_id = $1 AND state IN ('recorded', 'acknowledged')
 		ORDER BY created_at
 	`, hostID)
 	if err != nil {

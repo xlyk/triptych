@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"slices"
 	"sync"
 	"testing"
@@ -401,6 +403,153 @@ func TestRunnerCommandForUnknownRunObservesWithoutAction(t *testing.T) {
 	}
 }
 
+func TestRunnerDoesNotReapplyCommandWithDurableReceipt(t *testing.T) {
+	receipts := NewLocalCommandReceiptStore(filepath.Join(t.TempDir(), "receipts"))
+	cmd := PendingCommand{CommandID: "cmd-keep", RunID: "run-1", CommandType: domain.CommandTypeSend}
+	if err := receipts.MarkApplied(cmd); err != nil {
+		t.Fatalf("mark applied: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client := &stubClient{
+		workByHeartbeat: map[int]*Work{
+			1: {
+				HostID: "host-1",
+				ActiveRuns: []ActiveRun{{
+					RunID:     "run-1",
+					JobID:     "job-1",
+					RunStatus: domain.RunStatusActive,
+					Tmux:      TmuxRef{SessionName: "triptych-run-1", WindowName: "main"},
+				}},
+				PendingCommands: []PendingCommand{{
+					CommandID:   "cmd-keep",
+					RunID:       "run-1",
+					CommandType: domain.CommandTypeSend,
+					Payload:     &CommandPayload{Text: "hello again"},
+				}},
+			},
+		},
+		onHeartbeat: func(call int) {
+			if call == 1 {
+				cancel()
+			}
+		},
+	}
+	ctrl := &stubController{}
+	runner := Runner{
+		Config:   Config{HostID: "host-1", Hostname: "mbp.local", HeartbeatInterval: 5 * time.Millisecond},
+		Client:   client,
+		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Launch:   &stubLauncher{},
+		Control:  ctrl,
+		Receipts: receipts,
+	}
+
+	if err := runner.Run(ctx); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	ctrl.mu.Lock()
+	defer ctrl.mu.Unlock()
+	if len(ctrl.sendCalls) != 0 {
+		t.Fatalf("send calls = %d, want 0", len(ctrl.sendCalls))
+	}
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if len(client.ackedCommands) != 1 || client.ackedCommands[0] != "cmd-keep" {
+		t.Fatalf("acked = %v, want [cmd-keep]", client.ackedCommands)
+	}
+	if len(client.observedCmds) != 1 || client.observedCmds[0] != "cmd-keep" {
+		t.Fatalf("observed = %v, want [cmd-keep]", client.observedCmds)
+	}
+	if applied, err := receipts.HasApplied("cmd-keep"); err != nil {
+		t.Fatalf("HasApplied() error = %v", err)
+	} else if applied {
+		t.Fatal("expected receipt to be cleared after observe")
+	}
+}
+
+func TestRunnerLeavesAcknowledgedCommandPendingWhenActionFails(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client := &stubClient{
+		workByHeartbeat: map[int]*Work{
+			1: {
+				HostID: "host-1",
+				ActiveRuns: []ActiveRun{{
+					RunID:     "run-1",
+					JobID:     "job-1",
+					RunStatus: domain.RunStatusActive,
+					Tmux:      TmuxRef{SessionName: "triptych-run-1", WindowName: "main"},
+				}},
+				PendingCommands: []PendingCommand{{
+					CommandID:   "cmd-fail",
+					RunID:       "run-1",
+					CommandType: domain.CommandTypeSend,
+					Payload:     &CommandPayload{Text: "retry me"},
+				}},
+			},
+		},
+		onHeartbeat: func(call int) {
+			if call == 1 {
+				cancel()
+			}
+		},
+	}
+	ctrl := &stubController{sendErr: fmt.Errorf("tmux busy")}
+	runner := Runner{
+		Config:   Config{HostID: "host-1", Hostname: "mbp.local", HeartbeatInterval: 5 * time.Millisecond},
+		Client:   client,
+		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Launch:   &stubLauncher{},
+		Control:  ctrl,
+		Receipts: NewLocalCommandReceiptStore(filepath.Join(t.TempDir(), "receipts")),
+	}
+
+	if err := runner.Run(ctx); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if len(client.ackedCommands) != 1 || client.ackedCommands[0] != "cmd-fail" {
+		t.Fatalf("acked = %v", client.ackedCommands)
+	}
+	if len(client.observedCmds) != 0 {
+		t.Fatalf("observed = %v, want none", client.observedCmds)
+	}
+}
+
+func TestLocalCommandReceiptStoreRoundTrip(t *testing.T) {
+	store := NewLocalCommandReceiptStore(filepath.Join(t.TempDir(), "receipts"))
+	cmd := PendingCommand{CommandID: "cmd-store", RunID: "run-1", CommandType: domain.CommandTypeInterrupt}
+	if err := store.MarkApplied(cmd); err != nil {
+		t.Fatalf("MarkApplied() error = %v", err)
+	}
+	if ok, err := store.HasApplied(cmd.CommandID); err != nil {
+		t.Fatalf("HasApplied() error = %v", err)
+	} else if !ok {
+		t.Fatal("expected receipt to exist")
+	}
+	path := filepath.Join(store.baseDir, "cmd-store.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if len(data) == 0 {
+		t.Fatal("receipt file should not be empty")
+	}
+	if err := store.Clear(cmd.CommandID); err != nil {
+		t.Fatalf("Clear() error = %v", err)
+	}
+	if ok, err := store.HasApplied(cmd.CommandID); err != nil {
+		t.Fatalf("HasApplied() after clear error = %v", err)
+	} else if ok {
+		t.Fatal("expected receipt to be removed")
+	}
+}
+
 type stubClient struct {
 	mu              sync.Mutex
 	calls           []string
@@ -505,6 +654,9 @@ type stubController struct {
 	interrupts      []stubInterruptCall
 	kills           []string
 	killResult      bool
+	sendErr         error
+	interruptErr    error
+	killErr         error
 	hasSessionCalls []string
 	// sessionExists controls what HasSession returns per session name.
 	// If a name is absent, HasSession returns true (session exists).
@@ -536,21 +688,21 @@ func (s *stubController) SendKeys(_ context.Context, session, window, text strin
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sendCalls = append(s.sendCalls, stubSendCall{session: session, window: window, text: text})
-	return nil
+	return s.sendErr
 }
 
 func (s *stubController) SendInterrupt(_ context.Context, session, window string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.interrupts = append(s.interrupts, stubInterruptCall{session: session, window: window})
-	return nil
+	return s.interruptErr
 }
 
 func (s *stubController) KillSession(_ context.Context, session string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.kills = append(s.kills, session)
-	return s.killResult, nil
+	return s.killResult, s.killErr
 }
 
 func TestRunnerReconcilesMissingSessionToCrashed(t *testing.T) {

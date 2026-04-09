@@ -56,7 +56,10 @@ Environment variables:
 - `TRIPTYCH_CAPABILITIES` optional comma-separated list
 - `TRIPTYCH_ALLOWED_REPO_ROOTS` optional comma-separated absolute paths
 - `TRIPTYCH_LABELS` optional comma-separated `key=value` pairs
+- `TRIPTYCH_STATE_DIR` optional local daemon state directory (default `$HOME/.triptych`)
 - `TRIPTYCH_HEARTBEAT_INTERVAL` default `15s`
+
+`agentd` now keeps a tiny local command-receipt spool under `TRIPTYCH_STATE_DIR` so a command that was already applied locally will not be re-applied after a daemon restart while the daemon is still finishing ack/observe bookkeeping.
 
 ## E2E Smoke Tests
 

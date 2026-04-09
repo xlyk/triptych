@@ -191,8 +191,22 @@ func TestJobCommandIdempotencyAndAckFlow(t *testing.T) {
 		Data workResponse `json:"data"`
 	}
 	decodeResponse(t, workAfterAck, &workAfterAckBody)
-	if len(workAfterAckBody.Data.PendingCommands) != 0 {
-		t.Fatalf("pending commands after ack len = %d, want 0", len(workAfterAckBody.Data.PendingCommands))
+	if len(workAfterAckBody.Data.PendingCommands) != 1 {
+		t.Fatalf("pending commands after ack len = %d, want 1", len(workAfterAckBody.Data.PendingCommands))
+	}
+
+	observe := doJSON(t, handler, http.MethodPost, "/v1/commands/"+firstBody.Data.Command.CommandID.String()+"/observe", nil)
+	assertStatus(t, observe, http.StatusOK)
+
+	workAfterObserve := doJSON(t, handler, http.MethodGet, "/v1/hosts/host-1/work", nil)
+	assertStatus(t, workAfterObserve, http.StatusOK)
+	var workAfterObserveBody struct {
+		OK   bool         `json:"ok"`
+		Data workResponse `json:"data"`
+	}
+	decodeResponse(t, workAfterObserve, &workAfterObserveBody)
+	if len(workAfterObserveBody.Data.PendingCommands) != 0 {
+		t.Fatalf("pending commands after observe len = %d, want 0", len(workAfterObserveBody.Data.PendingCommands))
 	}
 }
 
@@ -605,7 +619,7 @@ func (s *memoryStore) ListPendingCommandsByHost(_ context.Context, hostID domain
 	defer s.mu.Unlock()
 	var out []domain.Command
 	for _, command := range s.commands {
-		if command.HostID == hostID && command.State == domain.CommandStateRecorded {
+		if command.HostID == hostID && command.State != domain.CommandStateObserved {
 			out = append(out, command)
 		}
 	}

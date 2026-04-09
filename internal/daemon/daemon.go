@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"time"
 
 	"github.com/xlyk/triptych/internal/domain"
@@ -11,12 +12,13 @@ import (
 )
 
 type Runner struct {
-	Config  Config
-	Client  Client
-	Logger  *slog.Logger
-	Launch  Launcher
-	Control TmuxController
-	Capture PaneCapturer
+	Config   Config
+	Client   Client
+	Logger   *slog.Logger
+	Launch   Launcher
+	Control  TmuxController
+	Capture  PaneCapturer
+	Receipts CommandReceiptStore
 }
 
 type PaneCapturer interface {
@@ -58,6 +60,10 @@ func (r Runner) Run(ctx context.Context) error {
 		defaultCapturer := triptychtmux.NewCapturer()
 		capturer = defaultCapturer
 	}
+	receipts := r.Receipts
+	if receipts == nil {
+		receipts = NewLocalCommandReceiptStore(filepath.Join(r.Config.StateDir, "agentd", r.Config.HostID.String(), "command-receipts"))
+	}
 
 	registration := HostRegistration{
 		HostID:           r.Config.HostID,
@@ -84,14 +90,14 @@ func (r Runner) Run(ctx context.Context) error {
 				return fmt.Errorf("heartbeat: %w", err)
 			}
 			logger.Debug("heartbeat sent", "host_id", r.Config.HostID)
-			if err := r.pollAndExecute(ctx, launcher, controller, capturer, logger); err != nil {
+			if err := r.pollAndExecute(ctx, launcher, controller, capturer, receipts, logger); err != nil {
 				return err
 			}
 		}
 	}
 }
 
-func (r Runner) pollAndExecute(ctx context.Context, launcher Launcher, controller TmuxController, capturer PaneCapturer, logger *slog.Logger) error {
+func (r Runner) pollAndExecute(ctx context.Context, launcher Launcher, controller TmuxController, capturer PaneCapturer, receipts CommandReceiptStore, logger *slog.Logger) error {
 	work, err := r.Client.GetWork(ctx, r.Config.HostID)
 	if err != nil {
 		return fmt.Errorf("get work: %w", err)
@@ -148,7 +154,7 @@ func (r Runner) pollAndExecute(ctx context.Context, launcher Launcher, controlle
 
 	// Execute pending commands.
 	for _, cmd := range work.PendingCommands {
-		if err := r.executeCommand(ctx, cmd, activeByRun, controller, logger); err != nil {
+		if err := r.executeCommand(ctx, cmd, activeByRun, controller, receipts, logger); err != nil {
 			logger.Error("command execution failed",
 				"command_id", cmd.CommandID,
 				"command_type", cmd.CommandType,
@@ -160,8 +166,16 @@ func (r Runner) pollAndExecute(ctx context.Context, launcher Launcher, controlle
 	return nil
 }
 
-func (r Runner) executeCommand(ctx context.Context, cmd PendingCommand, activeByRun map[domain.RunID]ActiveRun, controller TmuxController, logger *slog.Logger) error {
-	// Ack immediately.
+func (r Runner) executeCommand(ctx context.Context, cmd PendingCommand, activeByRun map[domain.RunID]ActiveRun, controller TmuxController, receipts CommandReceiptStore, logger *slog.Logger) error {
+	applied, err := receipts.HasApplied(cmd.CommandID)
+	if err != nil {
+		return err
+	}
+	if applied {
+		return r.finalizeAppliedCommand(ctx, cmd, receipts)
+	}
+
+	// Ack first so the server can keep surfacing the command while the daemon is still finishing it.
 	if err := r.Client.AckCommand(ctx, cmd.CommandID); err != nil {
 		return fmt.Errorf("ack command %s: %w", cmd.CommandID, err)
 	}
@@ -172,7 +186,7 @@ func (r Runner) executeCommand(ctx context.Context, cmd PendingCommand, activeBy
 			"command_id", cmd.CommandID,
 			"run_id", cmd.RunID,
 		)
-		return r.Client.ObserveCommand(ctx, cmd.CommandID)
+		return r.observeAndClearCommand(ctx, cmd.CommandID, receipts)
 	}
 
 	sessionName := ar.SessionName()
@@ -208,11 +222,27 @@ func (r Runner) executeCommand(ctx context.Context, cmd PendingCommand, activeBy
 
 	if execErr != nil {
 		logger.Error("command action failed", "command_id", cmd.CommandID, "error", execErr)
+		return nil
 	}
+	if err := receipts.MarkApplied(cmd); err != nil {
+		return fmt.Errorf("mark command %s applied: %w", cmd.CommandID, err)
+	}
+	return r.observeAndClearCommand(ctx, cmd.CommandID, receipts)
+}
 
-	// Observe regardless of action outcome — the daemon saw and attempted it.
-	if err := r.Client.ObserveCommand(ctx, cmd.CommandID); err != nil {
-		return fmt.Errorf("observe command %s: %w", cmd.CommandID, err)
+func (r Runner) finalizeAppliedCommand(ctx context.Context, cmd PendingCommand, receipts CommandReceiptStore) error {
+	if err := r.Client.AckCommand(ctx, cmd.CommandID); err != nil {
+		return fmt.Errorf("re-ack applied command %s: %w", cmd.CommandID, err)
+	}
+	return r.observeAndClearCommand(ctx, cmd.CommandID, receipts)
+}
+
+func (r Runner) observeAndClearCommand(ctx context.Context, commandID domain.CommandID, receipts CommandReceiptStore) error {
+	if err := r.Client.ObserveCommand(ctx, commandID); err != nil {
+		return fmt.Errorf("observe command %s: %w", commandID, err)
+	}
+	if err := receipts.Clear(commandID); err != nil {
+		return fmt.Errorf("clear command receipt %s: %w", commandID, err)
 	}
 	return nil
 }
