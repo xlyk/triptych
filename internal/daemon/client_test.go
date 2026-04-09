@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/xlyk/triptych/internal/domain"
 )
@@ -107,6 +108,88 @@ func TestHTTPClientServerError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "conflict") {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestHTTPClientGetWork(t *testing.T) {
+	var captured *http.Request
+
+	c := NewHTTPClient("http://example.test", &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			captured = req
+			return jsonResponse(http.StatusOK, `{"ok":true,"data":{"host_id":"host-1","launchable_jobs":[{"job_id":"job-1","run_id":"run-1","agent":"codex","repo_path":"/tmp/repo","workdir":"/tmp/repo","goal":"Fix it","priority":"normal","max_duration":"4h"}],"active_runs":[],"pending_commands":[]}}`), nil
+		}),
+	})
+
+	work, err := c.GetWork(context.Background(), "host-1")
+	if err != nil {
+		t.Fatalf("GetWork() error = %v", err)
+	}
+
+	if captured == nil {
+		t.Fatal("expected request")
+	}
+	if captured.Method != http.MethodGet {
+		t.Fatalf("method = %s, want GET", captured.Method)
+	}
+	if captured.URL.String() != "http://example.test/v1/hosts/host-1/work" {
+		t.Fatalf("url = %s", captured.URL.String())
+	}
+	if len(work.LaunchableJobs) != 1 {
+		t.Fatalf("launchable_jobs len = %d, want 1", len(work.LaunchableJobs))
+	}
+	if work.LaunchableJobs[0].RunID != "run-1" {
+		t.Fatalf("run_id = %q", work.LaunchableJobs[0].RunID)
+	}
+}
+
+func TestHTTPClientUpdateRunState(t *testing.T) {
+	var captured *http.Request
+	var body []byte
+	startedAt := time.Date(2026, 4, 8, 12, 0, 0, 0, time.UTC)
+	sessionName := "triptych-run-1"
+	windowName := "main"
+
+	c := NewHTTPClient("http://example.test", &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			captured = req
+			var err error
+			body, err = io.ReadAll(req.Body)
+			if err != nil {
+				t.Fatalf("read body: %v", err)
+			}
+			return jsonResponse(http.StatusOK, `{"ok":true}`), nil
+		}),
+	})
+
+	err := c.UpdateRunState(context.Background(), "run-1", RunStateUpdate{
+		Status:          domain.RunStatusActive,
+		TmuxSessionName: &sessionName,
+		TmuxWindowName:  &windowName,
+		StartedAt:       &startedAt,
+	})
+	if err != nil {
+		t.Fatalf("UpdateRunState() error = %v", err)
+	}
+
+	if captured == nil {
+		t.Fatal("expected request")
+	}
+	if captured.Method != http.MethodPost {
+		t.Fatalf("method = %s, want POST", captured.Method)
+	}
+	if captured.URL.String() != "http://example.test/v1/runs/run-1/state" {
+		t.Fatalf("url = %s", captured.URL.String())
+	}
+	payload := string(body)
+	if !strings.Contains(payload, `"status":"active"`) {
+		t.Fatalf("body = %s", payload)
+	}
+	if !strings.Contains(payload, `"tmux_session_name":"triptych-run-1"`) {
+		t.Fatalf("body = %s", payload)
+	}
+	if !strings.Contains(payload, `"started_at":"2026-04-08T12:00:00Z"`) {
+		t.Fatalf("body = %s", payload)
 	}
 }
 

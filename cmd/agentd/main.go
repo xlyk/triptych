@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/xlyk/triptych/internal/daemon"
+	triptychtmux "github.com/xlyk/triptych/internal/tmux"
 )
 
 func main() {
@@ -31,6 +32,7 @@ func main() {
 			Timeout: 10 * time.Second,
 		}),
 		Logger: logger,
+		Launch: triptychtmux.NewLauncher(),
 	}
 
 	logger.Info("starting agentd", "host_id", cfg.HostID, "server_url", cfg.ServerURL, "heartbeat_interval", cfg.HeartbeatInterval)

@@ -4,7 +4,7 @@ Minimal initial Go skeleton for the Triptych control plane.
 
 Current scope:
 - `tt` CLI with read-only commands against the control-plane server
-- `agentd` daemon that registers a host and sends periodic heartbeats
+- `agentd` daemon that registers a host, sends periodic heartbeats, and launches placeholder tmux-backed runs for attach testing
 - `agentserver` HTTP server with host/job/run management APIs
 - shared domain types and request validation
 
@@ -29,7 +29,7 @@ Use `--json` to get raw API data as pretty-printed JSON.
 
 ## agentd
 
-`agentd` now performs Task 5 host registration and heartbeat against `agentserver`.
+`agentd` now performs Task 6 host registration, heartbeat, work polling, and real detached tmux session launch for attach testing.
 
 Environment variables:
 - `TRIPTYCH_SERVER_URL` default `http://127.0.0.1:8080`
