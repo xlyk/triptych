@@ -421,6 +421,36 @@ def test_attach_metadata():
     assert data["tmux"]["window_name"] != ""
 
 
+def test_snapshot_captured():
+    """Verify that the daemon captures output snapshots for active runs."""
+    job_id = test_create_job_and_launch.job_id
+
+    # The daemon should have already captured at least one snapshot
+    # during its heartbeat cycle since the run became active.
+    def snapshot_available():
+        try:
+            resp = api("GET", f"/v1/jobs/{job_id}/tail")
+            snap = resp["data"]["snapshot"]
+            output = snap.get("output", "")
+            logv(f"  snapshot output length: {len(output)}, line_count: {snap.get('line_count', 0)}")
+            # The placeholder command prints run metadata, so output should be non-empty
+            return len(output) > 0
+        except Exception as e:
+            logv(f"  snapshot not yet available: {e}")
+            return False
+
+    poll_until(snapshot_available, DAEMON_CYCLE + 5, "snapshot captured")
+
+    resp = api("GET", f"/v1/jobs/{job_id}/tail")
+    snap = resp["data"]["snapshot"]
+    assert snap["line_count"] > 0, f"expected line_count > 0, got {snap['line_count']}"
+    assert not snap["stale"], "snapshot should not be stale"
+    assert "Triptych placeholder run" in snap["output"], \
+        f"expected placeholder output, got: {snap['output'][:100]}"
+
+    logv(f"snapshot verified: {snap['line_count']} lines")
+
+
 def test_send_command():
     """Send text to the tmux session via command API."""
     job_id = test_create_job_and_launch.job_id
@@ -649,6 +679,7 @@ def main():
         run_test("heartbeat_visible", test_heartbeat_visible)
         run_test("create_job_and_launch", test_create_job_and_launch)
         run_test("attach_metadata", test_attach_metadata)
+        run_test("snapshot_captured", test_snapshot_captured)
         run_test("send_command", test_send_command)
         run_test("interrupt_command", test_interrupt_command)
         run_test("stop_command", test_stop_command)

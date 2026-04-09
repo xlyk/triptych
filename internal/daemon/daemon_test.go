@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"slices"
@@ -411,6 +412,12 @@ type stubClient struct {
 	runUpdates      []stubRunUpdate
 	ackedCommands   []domain.CommandID
 	observedCmds    []domain.CommandID
+	snapshots       []stubSnapshot
+}
+
+type stubSnapshot struct {
+	runID    domain.RunID
+	snapshot SnapshotUpload
 }
 
 func (s *stubClient) RegisterHost(_ context.Context, host HostRegistration) error {
@@ -467,6 +474,13 @@ func (s *stubClient) ObserveCommand(_ context.Context, commandID domain.CommandI
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.observedCmds = append(s.observedCmds, commandID)
+	return nil
+}
+
+func (s *stubClient) UploadSnapshot(_ context.Context, runID domain.RunID, snapshot SnapshotUpload) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.snapshots = append(s.snapshots, stubSnapshot{runID: runID, snapshot: snapshot})
 	return nil
 }
 
@@ -765,5 +779,211 @@ func TestRunnerReconcileLeavesExistingSessionAlone(t *testing.T) {
 	// No run state updates should have been made.
 	if len(client.runUpdates) != 0 {
 		t.Fatalf("run updates = %d, want 0", len(client.runUpdates))
+	}
+}
+
+type stubCapturer struct {
+	mu     sync.Mutex
+	output string
+	lines  int
+	err    error
+	calls  []captureCall
+}
+
+type captureCall struct {
+	session string
+	window  string
+}
+
+func (s *stubCapturer) CapturePane(_ context.Context, sessionName, windowName string) (string, int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls = append(s.calls, captureCall{session: sessionName, window: windowName})
+	return s.output, s.lines, s.err
+}
+
+func TestRunnerCapturesSnapshotForActiveRuns(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	client := &stubClient{
+		workByHeartbeat: map[int]*Work{
+			1: {
+				HostID: "host-1",
+				ActiveRuns: []ActiveRun{{
+					RunID:     "run-1",
+					JobID:     "job-1",
+					RunStatus: domain.RunStatusActive,
+					Tmux:      TmuxRef{SessionName: "triptych-run-1", WindowName: "main"},
+				}},
+			},
+		},
+		onHeartbeat: func(call int) {
+			if call == 1 {
+				cancel()
+			}
+		},
+	}
+	ctrl := &stubController{
+		sessionExists: map[string]bool{"triptych-run-1": true},
+	}
+	cap := &stubCapturer{
+		output: "hello\nworld",
+		lines:  2,
+	}
+
+	runner := Runner{
+		Config: Config{
+			HostID:            "host-1",
+			Hostname:          "mbp.local",
+			HeartbeatInterval: 5 * time.Millisecond,
+		},
+		Client:  client,
+		Logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Launch:  &stubLauncher{},
+		Control: ctrl,
+		Capture: cap,
+	}
+
+	if err := runner.Run(ctx); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	cap.mu.Lock()
+	defer cap.mu.Unlock()
+
+	if len(cap.calls) != 1 {
+		t.Fatalf("capture calls = %d, want 1", len(cap.calls))
+	}
+	if cap.calls[0].session != "triptych-run-1" {
+		t.Fatalf("captured session = %q", cap.calls[0].session)
+	}
+	if cap.calls[0].window != "main" {
+		t.Fatalf("captured window = %q", cap.calls[0].window)
+	}
+
+	if len(client.snapshots) != 1 {
+		t.Fatalf("snapshots = %d, want 1", len(client.snapshots))
+	}
+	snap := client.snapshots[0]
+	if snap.runID != "run-1" {
+		t.Fatalf("snapshot run_id = %q", snap.runID)
+	}
+	if snap.snapshot.HostID != "host-1" {
+		t.Fatalf("snapshot host_id = %q", snap.snapshot.HostID)
+	}
+	if snap.snapshot.LineCount != 2 {
+		t.Fatalf("snapshot line_count = %d", snap.snapshot.LineCount)
+	}
+	if snap.snapshot.Output != "hello\nworld" {
+		t.Fatalf("snapshot output = %q", snap.snapshot.Output)
+	}
+	if snap.snapshot.Stale {
+		t.Fatal("snapshot should not be stale")
+	}
+	if snap.snapshot.CapturedAt.IsZero() {
+		t.Fatal("snapshot captured_at should be set")
+	}
+}
+
+func TestRunnerSkipsSnapshotForNonLiveRuns(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	client := &stubClient{
+		workByHeartbeat: map[int]*Work{
+			1: {
+				HostID: "host-1",
+				ActiveRuns: []ActiveRun{{
+					RunID:     "run-1",
+					JobID:     "job-1",
+					RunStatus: domain.RunStatusActive,
+					Tmux:      TmuxRef{SessionName: "", WindowName: ""},
+				}},
+			},
+		},
+		onHeartbeat: func(call int) {
+			if call == 1 {
+				cancel()
+			}
+		},
+	}
+	cap := &stubCapturer{output: "test", lines: 1}
+
+	runner := Runner{
+		Config: Config{
+			HostID:            "host-1",
+			Hostname:          "mbp.local",
+			HeartbeatInterval: 5 * time.Millisecond,
+		},
+		Client:  client,
+		Logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Launch:  &stubLauncher{},
+		Control: &stubController{},
+		Capture: cap,
+	}
+
+	if err := runner.Run(ctx); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	cap.mu.Lock()
+	defer cap.mu.Unlock()
+
+	if len(cap.calls) != 0 {
+		t.Fatalf("capture calls = %d, want 0 (no session name)", len(cap.calls))
+	}
+}
+
+func TestRunnerSnapshotCaptureErrorDoesNotFail(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	client := &stubClient{
+		workByHeartbeat: map[int]*Work{
+			1: {
+				HostID: "host-1",
+				ActiveRuns: []ActiveRun{{
+					RunID:     "run-1",
+					JobID:     "job-1",
+					RunStatus: domain.RunStatusActive,
+					Tmux:      TmuxRef{SessionName: "triptych-run-1", WindowName: "main"},
+				}},
+			},
+		},
+		onHeartbeat: func(call int) {
+			if call == 1 {
+				cancel()
+			}
+		},
+	}
+	cap := &stubCapturer{
+		err: fmt.Errorf("tmux not running"),
+	}
+
+	runner := Runner{
+		Config: Config{
+			HostID:            "host-1",
+			Hostname:          "mbp.local",
+			HeartbeatInterval: 5 * time.Millisecond,
+		},
+		Client:  client,
+		Logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Launch:  &stubLauncher{},
+		Control: &stubController{sessionExists: map[string]bool{"triptych-run-1": true}},
+		Capture: cap,
+	}
+
+	if err := runner.Run(ctx); err != nil {
+		t.Fatalf("Run() error = %v, want nil (capture errors are non-fatal)", err)
+	}
+
+	client.mu.Lock()
+	defer client.mu.Unlock()
+
+	if len(client.snapshots) != 0 {
+		t.Fatalf("snapshots = %d, want 0 (capture failed)", len(client.snapshots))
 	}
 }

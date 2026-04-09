@@ -31,8 +31,9 @@ func main() {
 		Client: daemon.NewHTTPClient(cfg.ServerURL, &http.Client{
 			Timeout: 10 * time.Second,
 		}),
-		Logger: logger,
-		Launch: triptychtmux.NewLauncher(),
+		Logger:  logger,
+		Launch:  triptychtmux.NewLauncher(),
+		Capture: triptychtmux.NewCapturer(),
 	}
 
 	logger.Info("starting agentd", "host_id", cfg.HostID, "server_url", cfg.ServerURL, "heartbeat_interval", cfg.HeartbeatInterval)

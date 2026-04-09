@@ -16,6 +16,11 @@ type Runner struct {
 	Logger  *slog.Logger
 	Launch  Launcher
 	Control TmuxController
+	Capture PaneCapturer
+}
+
+type PaneCapturer interface {
+	CapturePane(ctx context.Context, sessionName, windowName string) (output string, lineCount int, err error)
 }
 
 type Launcher interface {
@@ -48,6 +53,11 @@ func (r Runner) Run(ctx context.Context) error {
 		defaultController := triptychtmux.NewController()
 		controller = &defaultController
 	}
+	capturer := r.Capture
+	if capturer == nil {
+		defaultCapturer := triptychtmux.NewCapturer()
+		capturer = defaultCapturer
+	}
 
 	registration := HostRegistration{
 		HostID:           r.Config.HostID,
@@ -74,14 +84,14 @@ func (r Runner) Run(ctx context.Context) error {
 				return fmt.Errorf("heartbeat: %w", err)
 			}
 			logger.Debug("heartbeat sent", "host_id", r.Config.HostID)
-			if err := r.pollAndExecute(ctx, launcher, controller, logger); err != nil {
+			if err := r.pollAndExecute(ctx, launcher, controller, capturer, logger); err != nil {
 				return err
 			}
 		}
 	}
 }
 
-func (r Runner) pollAndExecute(ctx context.Context, launcher Launcher, controller TmuxController, logger *slog.Logger) error {
+func (r Runner) pollAndExecute(ctx context.Context, launcher Launcher, controller TmuxController, capturer PaneCapturer, logger *slog.Logger) error {
 	work, err := r.Client.GetWork(ctx, r.Config.HostID)
 	if err != nil {
 		return fmt.Errorf("get work: %w", err)
@@ -129,6 +139,11 @@ func (r Runner) pollAndExecute(ctx context.Context, launcher Launcher, controlle
 		if err := r.reconcileRun(ctx, ar, controller, logger); err != nil {
 			logger.Error("reconcile run failed", "run_id", ar.RunID, "error", err)
 		}
+	}
+
+	// Capture output snapshots for live runs with tmux sessions.
+	for _, ar := range work.ActiveRuns {
+		r.captureSnapshot(ctx, ar, capturer, logger)
 	}
 
 	// Execute pending commands.
@@ -286,6 +301,42 @@ func (r Runner) reconcileRun(ctx context.Context, ar ActiveRun, controller TmuxC
 		"disposition", disposition,
 	)
 	return nil
+}
+
+func (r Runner) captureSnapshot(ctx context.Context, ar ActiveRun, capturer PaneCapturer, logger *slog.Logger) {
+	sessionName := ar.SessionName()
+	if sessionName == "" {
+		return
+	}
+
+	switch ar.RunStatus {
+	case domain.RunStatusActive, domain.RunStatusWaiting, domain.RunStatusStopping:
+		// eligible for capture
+	default:
+		return
+	}
+
+	windowName := ar.WindowName()
+	if windowName == "" {
+		windowName = triptychtmux.DefaultWindowName
+	}
+
+	output, lineCount, err := capturer.CapturePane(ctx, sessionName, windowName)
+	if err != nil {
+		logger.Debug("snapshot capture failed", "run_id", ar.RunID, "error", err)
+		return
+	}
+
+	now := time.Now().UTC()
+	if err := r.Client.UploadSnapshot(ctx, ar.RunID, SnapshotUpload{
+		HostID:     r.Config.HostID,
+		CapturedAt: now,
+		LineCount:  lineCount,
+		Stale:      false,
+		Output:     output,
+	}); err != nil {
+		logger.Debug("snapshot upload failed", "run_id", ar.RunID, "error", err)
+	}
 }
 
 func stringPtr(value string) *string {

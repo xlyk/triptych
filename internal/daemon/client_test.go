@@ -218,6 +218,55 @@ func TestHTTPClientAckCommand(t *testing.T) {
 	}
 }
 
+func TestHTTPClientUploadSnapshot(t *testing.T) {
+	var captured *http.Request
+	var body []byte
+
+	c := NewHTTPClient("http://example.test", &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			captured = req
+			var err error
+			body, err = io.ReadAll(req.Body)
+			if err != nil {
+				t.Fatalf("read body: %v", err)
+			}
+			return jsonResponse(http.StatusOK, `{"ok":true,"data":{"snapshot":{"run_id":"run-1"}}}`), nil
+		}),
+	})
+
+	capturedAt := time.Date(2026, 4, 8, 12, 0, 0, 0, time.UTC)
+	err := c.UploadSnapshot(context.Background(), "run-1", SnapshotUpload{
+		HostID:     "host-1",
+		CapturedAt: capturedAt,
+		LineCount:  5,
+		Stale:      false,
+		Output:     "line1\nline2\nline3\nline4\nline5",
+	})
+	if err != nil {
+		t.Fatalf("UploadSnapshot() error = %v", err)
+	}
+
+	if captured == nil {
+		t.Fatal("expected request")
+	}
+	if captured.Method != http.MethodPost {
+		t.Fatalf("method = %s, want POST", captured.Method)
+	}
+	if captured.URL.String() != "http://example.test/v1/runs/run-1/snapshot" {
+		t.Fatalf("url = %s", captured.URL.String())
+	}
+	payload := string(body)
+	if !strings.Contains(payload, `"host_id":"host-1"`) {
+		t.Fatalf("body = %s", payload)
+	}
+	if !strings.Contains(payload, `"line_count":5`) {
+		t.Fatalf("body = %s", payload)
+	}
+	if !strings.Contains(payload, `"output":"line1\nline2\nline3\nline4\nline5"`) {
+		t.Fatalf("body = %s", payload)
+	}
+}
+
 func TestHTTPClientObserveCommand(t *testing.T) {
 	var captured *http.Request
 

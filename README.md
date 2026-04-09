@@ -31,6 +31,8 @@ Use `--json` to get raw API data as pretty-printed JSON.
 
 `agentd` now performs Task 6 host registration, heartbeat, work polling, and real detached tmux session launch for attach testing. On each poll tick, the daemon reconciles active runs against tmux reality: if a run's tmux session has disappeared, the daemon repairs the run state on the server (crashed/failed if unexpected, exited/cancelled if a stop was requested or the run was already stopping).
 
+On each tick, `agentd` also captures output snapshots for all live runs (active/waiting/stopping) that have a tmux session. It uses `tmux capture-pane` to read the last 200 lines from the pane and uploads the result via `POST /v1/runs/{run_id}/snapshot`. This makes `tt jobs tail <job-id>` return real terminal output.
+
 Environment variables:
 - `TRIPTYCH_SERVER_URL` default `http://127.0.0.1:8080`
 - `TRIPTYCH_HOST_ID` required
@@ -52,7 +54,8 @@ Prerequisites: Docker (for disposable Postgres), tmux, Python 3, Go toolchain.
 
 The harness starts a Postgres container, builds and runs agentserver + agentd,
 exercises host registration, heartbeat, job creation, tmux-backed launch,
-send/interrupt/stop commands, and reconciliation. All resources are cleaned up
+output snapshot capture, `tt jobs tail`, send/interrupt/stop commands, and
+reconciliation. All resources are cleaned up
 automatically. On failure, logs are saved to `.artifacts/e2e/<timestamp>/`.
 
 Pass `-v` for verbose output or `--keep` to retain artifacts on success:

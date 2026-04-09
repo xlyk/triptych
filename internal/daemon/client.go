@@ -20,6 +20,15 @@ type Client interface {
 	UpdateRunState(context.Context, domain.RunID, RunStateUpdate) error
 	AckCommand(context.Context, domain.CommandID) error
 	ObserveCommand(context.Context, domain.CommandID) error
+	UploadSnapshot(context.Context, domain.RunID, SnapshotUpload) error
+}
+
+type SnapshotUpload struct {
+	HostID     domain.HostID `json:"host_id"`
+	CapturedAt time.Time     `json:"captured_at"`
+	LineCount  int           `json:"line_count"`
+	Stale      bool          `json:"stale"`
+	Output     string        `json:"output"`
 }
 
 type HostRegistration struct {
@@ -140,6 +149,10 @@ func (c *HTTPClient) AckCommand(ctx context.Context, commandID domain.CommandID)
 
 func (c *HTTPClient) ObserveCommand(ctx context.Context, commandID domain.CommandID) error {
 	return c.postJSON(ctx, "/v1/commands/"+commandID.String()+"/observe", nil)
+}
+
+func (c *HTTPClient) UploadSnapshot(ctx context.Context, runID domain.RunID, snapshot SnapshotUpload) error {
+	return c.postJSON(ctx, "/v1/runs/"+runID.String()+"/snapshot", snapshot)
 }
 
 type registerHostRequest struct {
