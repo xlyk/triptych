@@ -444,9 +444,13 @@ func formatJobCreate(w io.Writer, data json.RawMessage) error {
 type tailEntry struct {
 	JobID    string `json:"job_id"`
 	Snapshot struct {
-		OutputText string `json:"output"`
+		RunID      string `json:"run_id"`
+		HostID     string `json:"host_id"`
+		CapturedAt string `json:"captured_at"`
 		LineCount  int    `json:"line_count"`
 		Stale      bool   `json:"stale"`
+		OutputText string `json:"output"`
+		UpdatedAt  string `json:"updated_at"`
 	} `json:"snapshot"`
 }
 
@@ -455,10 +459,41 @@ func formatJobTail(w io.Writer, data json.RawMessage) error {
 	if err := json.Unmarshal(data, &t); err != nil {
 		return err
 	}
+	freshness := "fresh"
 	if t.Snapshot.Stale {
-		if err := writef(w, "[stale snapshot, %d lines]\n", t.Snapshot.LineCount); err != nil {
+		freshness = "stale"
+	}
+	if err := writef(w, "Job:      %s\n", t.JobID); err != nil {
+		return err
+	}
+	if t.Snapshot.RunID != "" {
+		if err := writef(w, "Run:      %s\n", t.Snapshot.RunID); err != nil {
 			return err
 		}
+	}
+	if t.Snapshot.HostID != "" {
+		if err := writef(w, "Host:     %s\n", t.Snapshot.HostID); err != nil {
+			return err
+		}
+	}
+	if err := writef(w, "Snapshot: %s, %d lines\n", freshness, t.Snapshot.LineCount); err != nil {
+		return err
+	}
+	if t.Snapshot.CapturedAt != "" {
+		if err := writef(w, "Captured: %s\n", t.Snapshot.CapturedAt); err != nil {
+			return err
+		}
+	}
+	if t.Snapshot.UpdatedAt != "" {
+		if err := writef(w, "Updated:  %s\n", t.Snapshot.UpdatedAt); err != nil {
+			return err
+		}
+	}
+	if err := writeLine(w, ""); err != nil {
+		return err
+	}
+	if err := writeLine(w, "--- tail ---"); err != nil {
+		return err
 	}
 	text := strings.TrimRight(t.Snapshot.OutputText, "\n")
 	if text != "" {

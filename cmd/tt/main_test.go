@@ -166,7 +166,7 @@ func TestJobsGet(t *testing.T) {
 func TestJobsTail(t *testing.T) {
 	srv := fakeServer(t, map[string]fakeRoute{
 		"GET /v1/jobs/j-1/tail": {
-			body: `{"ok":true,"data":{"job_id":"j-1","snapshot":{"output":"hello world\n","line_count":1,"stale":false}}}`,
+			body: `{"ok":true,"data":{"job_id":"j-1","snapshot":{"run_id":"run-1","host_id":"host-1","captured_at":"2026-04-09T18:00:00Z","updated_at":"2026-04-09T18:00:02Z","output":"hello world\n","line_count":1,"stale":false}}}`,
 		},
 	})
 	defer srv.Close()
@@ -175,8 +175,66 @@ func TestJobsTail(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d", code)
 	}
-	if !strings.Contains(stdout, "hello world") {
-		t.Errorf("expected output text: %s", stdout)
+	for _, want := range []string{
+		"Job:      j-1",
+		"Run:      run-1",
+		"Host:     host-1",
+		"Snapshot: fresh, 1 lines",
+		"Captured: 2026-04-09T18:00:00Z",
+		"Updated:  2026-04-09T18:00:02Z",
+		"--- tail ---",
+		"hello world",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("expected %q in output: %s", want, stdout)
+		}
+	}
+}
+
+func TestJobsTail_StaleSnapshot(t *testing.T) {
+	srv := fakeServer(t, map[string]fakeRoute{
+		"GET /v1/jobs/j-1/tail": {
+			body: `{"ok":true,"data":{"job_id":"j-1","snapshot":{"run_id":"run-1","host_id":"host-1","line_count":37,"stale":true,"output":"old line\n"}}}`,
+		},
+	})
+	defer srv.Close()
+
+	stdout, _, code := runCLI(t, srv.URL, "jobs", "tail", "j-1")
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	for _, want := range []string{
+		"Snapshot: stale, 37 lines",
+		"--- tail ---",
+		"old line",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("expected %q in output: %s", want, stdout)
+		}
+	}
+}
+
+func TestJobsTail_NoOutput(t *testing.T) {
+	srv := fakeServer(t, map[string]fakeRoute{
+		"GET /v1/jobs/j-1/tail": {
+			body: `{"ok":true,"data":{"job_id":"j-1","snapshot":{"run_id":"run-1","host_id":"host-1","line_count":0,"stale":false,"output":""}}}`,
+		},
+	})
+	defer srv.Close()
+
+	stdout, _, code := runCLI(t, srv.URL, "jobs", "tail", "j-1")
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	for _, want := range []string{
+		"Job:      j-1",
+		"Snapshot: fresh, 0 lines",
+		"--- tail ---",
+		"(no output)",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("expected %q in output: %s", want, stdout)
+		}
 	}
 }
 
@@ -392,8 +450,8 @@ func TestServerError(t *testing.T) {
 	}
 }
 
-func TestEnvVarDefault(t *testing.T) {
-	t.Setenv("TRIPTYCH_SERVER_URL", "")
+func TestServerURLEnvVarUsed(t *testing.T) {
+	t.Setenv("TRIPTYCH_SERVER_URL", "http://127.0.0.1:1")
 	_, stderr, code := runCLI(t, "", "hosts", "list")
 	if code != 1 {
 		t.Errorf("expected exit 1, got %d", code)
