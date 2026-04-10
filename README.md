@@ -20,8 +20,8 @@ Commands:
   hosts get <host-id>         Show details for a host
   jobs  list                  List all jobs
   jobs  get <job-id>          Show details for a job
-  jobs  tail <job-id>         Show latest output snapshot
-  jobs  attach <job-id>       Show tmux attach info
+  jobs  tail <job-id>         Show latest output snapshot with operator metadata
+  jobs  attach <job-id>       Show tmux attach info and next-step guidance
   jobs  create --host <host-id> --agent <agent> --repo <repo-path> --goal <goal>
                               Create a job on a host
   jobs  send <job-id> <text>  Queue input text for a job
@@ -37,11 +37,18 @@ Typical operator loop:
 ```
 tt jobs create --host host-1 --agent codex --repo /abs/path/to/repo --goal "Fix the failing tests"
 tt jobs list
+tt jobs get <job-id>
 tt jobs tail <job-id>
+tt jobs attach <job-id>
 tt jobs send <job-id> "continue with the refactor"
 tt jobs interrupt <job-id>
 tt jobs stop <job-id>
 ```
+
+Recommended interpretation:
+- `tt jobs get` gives the control-plane state view
+- `tt jobs tail` gives the latest bounded snapshot with freshness/line metadata
+- `tt jobs attach` gives the live tmux attach path plus a reminder to inspect the snapshot first
 
 ## agentd
 
