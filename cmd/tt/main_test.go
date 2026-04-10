@@ -354,8 +354,18 @@ func TestJobsSend(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d", code)
 	}
-	if !strings.Contains(stdout, "Queued send cmd-1 for job job-1 (recorded)") {
-		t.Fatalf("unexpected output: %s", stdout)
+	for _, want := range []string{
+		"Action:   send",
+		"Command:  cmd-1",
+		"Job:      job-1",
+		"State:    recorded",
+		"Next:",
+		"tt jobs get job-1",
+		"tt jobs tail job-1",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("expected %q in output: %s", want, stdout)
+		}
 	}
 }
 
@@ -386,16 +396,34 @@ func TestJobsInterruptAndStop(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d", code)
 	}
-	if !strings.Contains(stdout, "Queued interrupt cmd-int for job job-1 (recorded)") {
-		t.Fatalf("unexpected interrupt output: %s", stdout)
+	for _, want := range []string{
+		"Action:   interrupt",
+		"Command:  cmd-int",
+		"Job:      job-1",
+		"State:    recorded",
+		"tt jobs get job-1",
+		"tt jobs tail job-1",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("expected %q in interrupt output: %s", want, stdout)
+		}
 	}
 
 	stdout, _, code = runCLI(t, srv.URL, "jobs", "stop", "--idempotency-key=req-stop", "job-1")
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d", code)
 	}
-	if !strings.Contains(stdout, "Queued stop cmd-stop for job job-1 (recorded)") {
-		t.Fatalf("unexpected stop output: %s", stdout)
+	for _, want := range []string{
+		"Action:   stop",
+		"Command:  cmd-stop",
+		"Job:      job-1",
+		"State:    recorded",
+		"tt jobs get job-1",
+		"tt jobs tail job-1",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("expected %q in stop output: %s", want, stdout)
+		}
 	}
 }
 

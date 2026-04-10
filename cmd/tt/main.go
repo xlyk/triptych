@@ -575,7 +575,25 @@ func formatCommandCreate(w io.Writer, cmd string, data json.RawMessage) error {
 		return err
 	}
 	action := strings.TrimPrefix(cmd, "jobs ")
-	return writef(w, "Queued %s %s for job %s (%s)\n", action, resp.Command.CommandID, resp.Command.JobID, resp.Command.State)
+	if err := writef(w, "Action:   %s\n", action); err != nil {
+		return err
+	}
+	if err := writef(w, "Command:  %s\n", resp.Command.CommandID); err != nil {
+		return err
+	}
+	if err := writef(w, "Job:      %s\n", resp.Command.JobID); err != nil {
+		return err
+	}
+	if err := writef(w, "State:    %s\n", resp.Command.State); err != nil {
+		return err
+	}
+	if err := writeLine(w, ""); err != nil {
+		return err
+	}
+	if err := writef(w, "Next:\n  tt jobs get %s\n", resp.Command.JobID); err != nil {
+		return err
+	}
+	return writef(w, "  tt jobs tail %s\n", resp.Command.JobID)
 }
 
 func truncateStr(s string, n int) string {
