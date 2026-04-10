@@ -402,12 +402,20 @@ func formatJobsList(w io.Writer, data json.RawMessage) error {
 	if len(resp.Jobs) == 0 {
 		return writeLine(w, "No jobs found.")
 	}
-	if err := writef(w, "%-20s %-12s %-10s %s\n", "JOB ID", "STATUS", "AGENT", "GOAL"); err != nil {
+	if err := writef(w, "%-20s %-12s %-18s %-10s %-10s %s\n", "JOB ID", "STATUS", "RUN", "HEALTH", "AGENT", "GOAL"); err != nil {
 		return err
 	}
 	for _, j := range resp.Jobs {
 		goal := truncateStr(j.Job.Goal, 50)
-		if err := writef(w, "%-20s %-12s %-10s %s\n", j.Job.JobID, j.Job.Status, j.Job.Agent, goal); err != nil {
+		runStatus := "-"
+		if j.Run != nil && j.Run.Status != "" {
+			runStatus = j.Run.Status
+		}
+		health := j.HostHealth
+		if health == "" {
+			health = "-"
+		}
+		if err := writef(w, "%-20s %-12s %-18s %-10s %-10s %s\n", j.Job.JobID, j.Job.Status, runStatus, health, j.Job.Agent, goal); err != nil {
 			return err
 		}
 	}

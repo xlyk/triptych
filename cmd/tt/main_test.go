@@ -123,7 +123,7 @@ func TestHostsGet_MissingArg(t *testing.T) {
 func TestJobsList(t *testing.T) {
 	srv := fakeServer(t, map[string]fakeRoute{
 		"GET /v1/jobs": {
-			body: `{"ok":true,"data":{"jobs":[{"job":{"job_id":"j-1","host_id":"h-1","agent":"claude","status":"running","goal":"fix bug","repo_path":"/repo"},"host_health":"online"}]}}`,
+			body: `{"ok":true,"data":{"jobs":[{"job":{"job_id":"j-1","host_id":"h-1","agent":"claude","status":"running","goal":"fix bug","repo_path":"/repo"},"run":{"run_id":"run-1","status":"active"},"host_health":"online"}]}}`,
 		},
 	})
 	defer srv.Close()
@@ -132,11 +132,10 @@ func TestJobsList(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d", code)
 	}
-	if !strings.Contains(stdout, "j-1") {
-		t.Errorf("expected job id: %s", stdout)
-	}
-	if !strings.Contains(stdout, "running") {
-		t.Errorf("expected status: %s", stdout)
+	for _, want := range []string{"JOB ID", "RUN", "HEALTH", "j-1", "running", "active", "online"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("expected %q in output: %s", want, stdout)
+		}
 	}
 }
 
