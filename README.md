@@ -59,23 +59,22 @@ Live-stack note:
 
 ## agentserver
 
-Start the API server. Requires a Postgres connection (see `DATABASE_URL`).
+`agentserver` is the HTTP API server. It connects to Postgres, runs migrations on startup, and serves the control-plane endpoints used by both `tt` and `agentd`.
 
 ```sh
 # Build
 go build -o bin/agentserver ./cmd/agentserver
 
-# Run
-./bin/agentserver          # defaults: :8080, postgres://localhost:5432/triptych?sslmode=disable
+# Run (required database URL)
+TRIPTYCH_DATABASE_URL='postgres://triptych:triptych@127.0.0.1:5432/triptych?sslmode=disable' ./bin/agentserver
 
-# Or with explicit overrides:
-./bin/agentserver --http-addr :9000
-DATABASE_URL=postgres://user:pass@host:5432/mydb ./bin/agentserver
+# Override listen address
+TRIPTYCH_SERVER_ADDR=':9090' TRIPTYCH_DATABASE_URL='postgres://triptych:triptych@127.0.0.1:5432/triptych?sslmode=disable' ./bin/agentserver
 ```
 
 Environment variables:
-- `DATABASE_URL` — Postgres DSN (required; default `postgres://localhost:5432/triptych?sslmode=disable`)
-- `HTTP_ADDR` — listen address (default `:8080`)
+- `TRIPTYCH_DATABASE_URL` — required Postgres DSN
+- `TRIPTYCH_SERVER_ADDR` — listen address (default `:8080`)
 
 ## agentd
 
