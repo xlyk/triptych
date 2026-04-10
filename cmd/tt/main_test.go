@@ -250,11 +250,20 @@ func TestJobsAttach(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d", code)
 	}
-	if !strings.Contains(stdout, "triptych-j-1") {
-		t.Errorf("expected tmux session: %s", stdout)
-	}
-	if !strings.Contains(stdout, "ssh") {
-		t.Errorf("expected ssh command: %s", stdout)
+	for _, want := range []string{
+		"Job:      j-1",
+		"Host:     h-1",
+		"SSH:      h-1",
+		"Session:  triptych-j-1",
+		"Window:   main",
+		"Check snapshot:",
+		"tt jobs tail j-1",
+		"Attach live session:",
+		"ssh h-1 -t tmux attach -t triptych-j-1",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("expected %q in output: %s", want, stdout)
+		}
 	}
 }
 

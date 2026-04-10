@@ -520,16 +520,30 @@ func formatJobAttach(w io.Writer, data json.RawMessage) error {
 	if err := json.Unmarshal(data, &a); err != nil {
 		return err
 	}
-	if err := writef(w, "Job:     %s\n", a.JobID); err != nil {
+	if err := writef(w, "Job:      %s\n", a.JobID); err != nil {
 		return err
 	}
-	if err := writef(w, "Host:    %s (%s)\n", a.HostID, a.Attach.SSHTarget); err != nil {
+	if err := writef(w, "Host:     %s\n", a.HostID); err != nil {
 		return err
 	}
-	if err := writef(w, "Session: %s (window: %s)\n", a.Tmux.SessionName, a.Tmux.WindowName); err != nil {
+	if a.Attach.SSHTarget != "" {
+		if err := writef(w, "SSH:      %s\n", a.Attach.SSHTarget); err != nil {
+			return err
+		}
+	}
+	if err := writef(w, "Session:  %s\n", a.Tmux.SessionName); err != nil {
 		return err
 	}
-	return writef(w, "\nTo attach:\n  %s\n", a.Attach.Command)
+	if err := writef(w, "Window:   %s\n", a.Tmux.WindowName); err != nil {
+		return err
+	}
+	if err := writeLine(w, ""); err != nil {
+		return err
+	}
+	if err := writef(w, "Check snapshot:\n  tt jobs tail %s\n", a.JobID); err != nil {
+		return err
+	}
+	return writef(w, "Attach live session:\n  %s\n", a.Attach.Command)
 }
 
 type commandEntry struct {
