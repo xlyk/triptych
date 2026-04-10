@@ -19,7 +19,7 @@ Commands:
   hosts list                  List all registered hosts
   hosts get <host-id>         Show details for a host
   jobs  list                  List all jobs
-  jobs  get <job-id>          Show details for a job
+  jobs  get <job-id>          Show job state, host health, and next-step guidance
   jobs  tail <job-id>         Show latest output snapshot with operator metadata
   jobs  attach <job-id>       Show tmux attach info and next-step guidance
   jobs  create --host <host-id> --agent <agent> --repo <repo-path> --goal <goal>
@@ -46,9 +46,10 @@ tt jobs stop <job-id>
 ```
 
 Recommended interpretation:
-- `tt jobs get` gives the control-plane state view
+- `tt jobs get` gives the control-plane state view plus host health and the next recommended checks
 - `tt jobs tail` gives the latest bounded snapshot with freshness/line metadata
 - `tt jobs attach` gives the live tmux attach path plus a reminder to inspect the snapshot first
+- command acknowledgements (`send`, `interrupt`, `stop`) should send you back to `tt jobs get` and `tt jobs tail`
 
 ## agentd
 
