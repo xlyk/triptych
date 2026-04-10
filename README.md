@@ -1,12 +1,13 @@
 # Triptych
 
-Minimal initial Go skeleton for the Triptych control plane.
+Triptych is a tmux-backed control plane for running agentic CI/infrastructure tasks. Operators use the `tt` CLI to create, monitor, and interact with jobs; `agentd` runs on each execution host and launches agent sessions in tmux; `agentserver` is the HTTP API server backing both.
 
-Current scope:
-- `tt` CLI with basic read/write operator commands against the control-plane server
-- `agentd` daemon that registers a host, sends periodic heartbeats, and launches real agent CLIs (or placeholders in test mode) in tmux-backed runs
-- `agentserver` HTTP server with host/job/run management APIs
-- shared domain types and request validation
+**Components:**
+- `agentserver` — HTTP API server (Postgres-backed)
+- `agentd` — per-host daemon; registers the host, polls for work, launches tmux sessions
+- `tt` — operator CLI; no daemon, connects to agentserver over HTTP
+
+**Domain model:** `Host` (execution machine) → `Job` (requested task) → `Run` (one execution attempt of a job) → `Command` (operator input: send/interrupt/stop) + `OutputSnapshot` (captured terminal output)
 
 ## tt CLI
 
@@ -18,7 +19,7 @@ tt [--json] <resource> <action> [args...]
 Commands:
   hosts list                  List all registered hosts
   hosts get <host-id>         Show details for a host
-  jobs  list                  List all jobs
+  jobs  list [--status <status>]  List jobs, optionally filtered by status
   jobs  get <job-id>          Show job state, host health, and next-step guidance
   jobs  tail <job-id>         Show latest output snapshot with operator metadata
   jobs  attach <job-id>       Show tmux attach info and next-step guidance
@@ -35,8 +36,8 @@ Use `--json` to get raw API data as pretty-printed JSON.
 Typical operator loop:
 
 ```
+tt jobs list --status running
 tt jobs create --host host-1 --agent codex --repo /abs/path/to/repo --goal "Fix the failing tests"
-tt jobs list
 tt jobs get <job-id>
 tt jobs tail <job-id>
 tt jobs attach <job-id>
@@ -46,16 +47,41 @@ tt jobs stop <job-id>
 ```
 
 Recommended interpretation:
+- `tt jobs list --status running|failed|queued` is the fast triage view
+- `tt jobs list` now shows job status, latest run status, host health, agent, and goal
 - `tt jobs get` gives the control-plane state view plus host health and the next recommended checks
 - `tt jobs tail` gives the latest bounded snapshot with freshness/line metadata
 - `tt jobs attach` gives the live tmux attach path plus a reminder to inspect the snapshot first
 - command acknowledgements (`send`, `interrupt`, `stop`) should send you back to `tt jobs get` and `tt jobs tail`
 
+Live-stack note:
+- when you change Triptych server/daemon code locally, an already-running live stack will keep serving the old behavior until you restart the managed binaries
+
+## agentserver
+
+Start the API server. Requires a Postgres connection (see `DATABASE_URL`).
+
+```sh
+# Build
+go build -o bin/agentserver ./cmd/agentserver
+
+# Run
+./bin/agentserver          # defaults: :8080, postgres://localhost:5432/triptych?sslmode=disable
+
+# Or with explicit overrides:
+./bin/agentserver --http-addr :9000
+DATABASE_URL=postgres://user:pass@host:5432/mydb ./bin/agentserver
+```
+
+Environment variables:
+- `DATABASE_URL` — Postgres DSN (required; default `postgres://localhost:5432/triptych?sslmode=disable`)
+- `HTTP_ADDR` — listen address (default `:8080`)
+
 ## agentd
 
 `agentd` registers the host, sends periodic heartbeats, polls for work, and launches agent processes in detached tmux sessions. On each poll tick, the daemon reconciles active runs against tmux reality: if a run's tmux session has disappeared, the daemon repairs the run state on the server (crashed/failed if unexpected, exited/cancelled if a stop was requested or the run was already stopping).
 
-### Interactive agent runtime (Option B)
+### Interactive agent runtime
 
 When a job is assigned, `agentd` launches a **long-lived interactive agent session** in tmux and injects the job goal:
 
@@ -81,7 +107,7 @@ Triptych can also pre-seed trust / approval settings for these interactive CLIs 
   - `TRIPTYCH_CODEX_CONFIG_PROFILE=triptych` adds `--profile triptych`
   - `TRIPTYCH_CODEX_TRUST_PROJECT=true` adds a `--config projects."<workdir>".trust_level="trusted"` override for the job workdir
 
-This keeps Option B interactive workers attachable while still letting operators pre-approve the workspace or command policy up front. For Claude specifically, treat these settings as best-effort hints rather than a guaranteed prompt suppressor; when the prompt still appears in a given environment, enable `TRIPTYCH_CLAUDE_STARTUP_HANDSHAKE=true` for that host instead of relying on an unconditional bootstrap.
+This keeps interactive workers attachable while still letting operators pre-approve the workspace or command policy up front. For Claude specifically, treat these settings as best-effort hints rather than a guaranteed prompt suppressor; when the prompt still appears in a given environment, enable `TRIPTYCH_CLAUDE_STARTUP_HANDSHAKE=true` for that host instead of relying on an unconditional bootstrap.
 
 Because the sessions are interactive and long-lived, operators can attach to a running session via `tt jobs attach <job-id>` and interact freely via `tt jobs send`. When the agent finishes or the session exits, reconciliation repairs the run state on the server.
 
@@ -94,9 +120,9 @@ The default (unset or empty) is real mode.
 On each tick, `agentd` also captures output snapshots for all live runs (active/waiting/stopping) that have a tmux session. It uses `tmux capture-pane` to read the last 200 lines from the pane and uploads the result via `POST /v1/runs/{run_id}/snapshot`. This makes `tt jobs tail <job-id>` return real terminal output.
 
 Environment variables:
-- `TRIPTYCH_SERVER_URL` default `http://127.0.0.1:8080`
-- `TRIPTYCH_HOST_ID` required
-- `TRIPTYCH_HOSTNAME` default `os.Hostname()`
+- `TRIPTYCH_SERVER_URL` — agentserver URL (default `http://127.0.0.1:8080`; shared with `tt`)
+- `TRIPTYCH_HOST_ID` — required host identifier
+- `TRIPTYCH_HOSTNAME` — hostname reported to server (default `os.Hostname()`)
 - `TRIPTYCH_CAPABILITIES` optional comma-separated list
 - `TRIPTYCH_ALLOWED_REPO_ROOTS` optional comma-separated absolute paths
 - `TRIPTYCH_LABELS` optional comma-separated `key=value` pairs
