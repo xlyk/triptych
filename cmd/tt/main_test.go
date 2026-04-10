@@ -152,14 +152,18 @@ func TestJobsGet(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d", code)
 	}
-	if !strings.Contains(stdout, "Job:      j-1") {
-		t.Errorf("expected formatted job id: %s", stdout)
-	}
-	if !strings.Contains(stdout, "Run:      run-1 (pending_launch)") {
-		t.Errorf("expected formatted run: %s", stdout)
-	}
-	if !strings.Contains(stdout, "Goal:     refactor") {
-		t.Errorf("expected formatted goal: %s", stdout)
+	for _, want := range []string{
+		"Job:      j-1",
+		"Run:      run-1 (pending_launch)",
+		"Health:   online",
+		"Goal:     refactor",
+		"Next:",
+		"tt jobs tail j-1",
+		"tt jobs attach j-1",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("expected %q in output: %s", want, stdout)
+		}
 	}
 }
 

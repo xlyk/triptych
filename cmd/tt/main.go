@@ -416,10 +416,24 @@ func formatJobGet(w io.Writer, data json.RawMessage) error {
 	if err := writef(w, "Host:     %s\n", j.Job.HostID); err != nil {
 		return err
 	}
+	if j.HostHealth != "" {
+		if err := writef(w, "Health:   %s\n", j.HostHealth); err != nil {
+			return err
+		}
+	}
 	if err := writef(w, "Repo:     %s\n", j.Job.RepoPath); err != nil {
 		return err
 	}
-	return writef(w, "Goal:     %s\n", j.Job.Goal)
+	if err := writef(w, "Goal:     %s\n", j.Job.Goal); err != nil {
+		return err
+	}
+	if err := writeLine(w, ""); err != nil {
+		return err
+	}
+	if err := writef(w, "Next:\n  tt jobs tail %s\n", j.Job.JobID); err != nil {
+		return err
+	}
+	return writef(w, "  tt jobs attach %s\n", j.Job.JobID)
 }
 
 type createJobEntry struct {
