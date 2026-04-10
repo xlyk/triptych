@@ -9,6 +9,54 @@ Triptych is a tmux-backed control plane for running agentic CI/infrastructure ta
 
 **Domain model:** `Host` (execution machine) → `Job` (requested task) → `Run` (one execution attempt of a job) → `Command` (operator input: send/interrupt/stop) + `OutputSnapshot` (captured terminal output)
 
+## Quickstart: one local host
+
+This is the shortest useful local operator loop.
+
+Prerequisites:
+- Postgres reachable from this machine
+- `tmux` installed
+- Go toolchain installed
+- `claude` or `codex` on `PATH` for real runs
+
+Build the binaries:
+
+```sh
+go build -o bin/agentserver ./cmd/agentserver
+go build -o bin/agentd ./cmd/agentd
+go build -o bin/tt ./cmd/tt
+```
+
+Terminal 1 — start `agentserver`:
+
+```sh
+TRIPTYCH_DATABASE_URL='postgres://triptych:triptych@127.0.0.1:5432/triptych?sslmode=disable' ./bin/agentserver
+```
+
+Terminal 2 — start `agentd` for one local worker:
+
+```sh
+TRIPTYCH_SERVER_URL='http://127.0.0.1:8080' \
+TRIPTYCH_HOST_ID='host-local-1' \
+TRIPTYCH_HOSTNAME='local-dev' \
+TRIPTYCH_CAPABILITIES='claude,codex,tmux' \
+TRIPTYCH_ALLOWED_REPO_ROOTS='/absolute/path/you/want/agentd/to-use' \
+./bin/agentd
+```
+
+Terminal 3 — operator flow with `tt`:
+
+```sh
+export TRIPTYCH_SERVER_URL='http://127.0.0.1:8080'
+./bin/tt hosts list
+./bin/tt jobs create --host host-local-1 --agent codex --repo /absolute/repo --goal 'Inspect the repo and propose the next change'
+./bin/tt jobs get <job-id>
+./bin/tt jobs tail <job-id>
+./bin/tt jobs attach <job-id>
+```
+
+If you want a deterministic smoke path instead of a real agent runtime, run `make e2e`.
+
 ## tt CLI
 
 Basic operator commands for querying the Triptych control plane and pushing job actions.
