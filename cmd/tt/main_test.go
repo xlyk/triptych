@@ -140,6 +140,39 @@ func TestJobsList(t *testing.T) {
 	}
 }
 
+func TestJobsList_StatusFilter(t *testing.T) {
+	srv := fakeServer(t, map[string]fakeRoute{
+		"GET /v1/jobs": {
+			body: `{"ok":true,"data":{"jobs":[{"job":{"job_id":"j-1","host_id":"h-1","agent":"claude","status":"running","goal":"fix bug","repo_path":"/repo"},"host_health":"online"}]}}`,
+			check: func(t *testing.T, r *http.Request, _ []byte) {
+				t.Helper()
+				if got := r.URL.Query().Get("status"); got != "running" {
+					t.Fatalf("status query = %q, want running", got)
+				}
+			},
+		},
+	})
+	defer srv.Close()
+
+	stdout, _, code := runCLI(t, srv.URL, "jobs", "list", "--status", "running")
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	if !strings.Contains(stdout, "j-1") {
+		t.Errorf("expected filtered job id: %s", stdout)
+	}
+}
+
+func TestJobsList_InvalidStatusFilter(t *testing.T) {
+	_, stderr, code := runCLI(t, "http://unused", "jobs", "list", "--status", "bogus")
+	if code != 1 {
+		t.Fatalf("expected exit 1, got %d", code)
+	}
+	if !strings.Contains(stderr, "usage: tt jobs list") {
+		t.Fatalf("expected usage hint, got: %s", stderr)
+	}
+}
+
 func TestJobsGet(t *testing.T) {
 	srv := fakeServer(t, map[string]fakeRoute{
 		"GET /v1/jobs/j-1": {

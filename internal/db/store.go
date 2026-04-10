@@ -234,11 +234,17 @@ func (s *Store) GetJobByIdempotencyKey(ctx context.Context, key string) (*domain
 	return j, nil
 }
 
-func (s *Store) ListJobs(ctx context.Context) ([]domain.Job, error) {
-	rows, err := s.pool.Query(ctx, `
+func (s *Store) ListJobs(ctx context.Context, statusFilter *domain.JobStatus) ([]domain.Job, error) {
+	query := `
 		SELECT job_id, host_id, agent, status, repo_path, workdir, goal, priority, max_duration, idempotency_key, metadata_json, created_at, updated_at
-		FROM jobs ORDER BY created_at
-	`)
+		FROM jobs`
+	args := make([]any, 0, 1)
+	if statusFilter != nil {
+		query += ` WHERE status = $1`
+		args = append(args, *statusFilter)
+	}
+	query += ` ORDER BY created_at`
+	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list jobs: %w", err)
 	}

@@ -35,7 +35,7 @@ type Store interface {
 
 	GetJob(context.Context, domain.JobID) (*domain.Job, error)
 	GetJobByIdempotencyKey(context.Context, string) (*domain.Job, error)
-	ListJobs(context.Context) ([]domain.Job, error)
+	ListJobs(context.Context, *domain.JobStatus) ([]domain.Job, error)
 	UpdateJobStatus(context.Context, domain.JobID, domain.JobStatus) error
 	CreateJobWithInitialRun(context.Context, *domain.Job, *domain.Run) error
 
@@ -456,7 +456,21 @@ func (h *Handler) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleListJobs(w http.ResponseWriter, r *http.Request) {
-	jobs, err := h.store.ListJobs(r.Context())
+	var statusFilter *domain.JobStatus
+	if raw := strings.TrimSpace(r.URL.Query().Get("status")); raw != "" {
+		status := domain.JobStatus(raw)
+		if err := status.Validate(); err != nil {
+			h.writeErr(w, &apiError{
+				Status:  http.StatusBadRequest,
+				Code:    "invalid_argument",
+				Message: "invalid status filter",
+				Details: map[string]string{"status": err.Error()},
+			})
+			return
+		}
+		statusFilter = &status
+	}
+	jobs, err := h.store.ListJobs(r.Context(), statusFilter)
 	if err != nil {
 		h.writeErr(w, err)
 		return

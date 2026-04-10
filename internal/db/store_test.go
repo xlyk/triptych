@@ -162,12 +162,28 @@ func TestJobCRUD(t *testing.T) {
 	}
 
 	// List
-	jobs, err := s.ListJobs(ctx)
+	jobs, err := s.ListJobs(ctx, nil)
 	if err != nil {
 		t.Fatalf("list jobs: %v", err)
 	}
 	if len(jobs) != 1 {
 		t.Errorf("list jobs len = %d, want 1", len(jobs))
+	}
+	running := domain.JobStatusRunning
+	jobs, err = s.ListJobs(ctx, &running)
+	if err != nil {
+		t.Fatalf("list jobs filtered: %v", err)
+	}
+	if len(jobs) != 1 {
+		t.Errorf("filtered list jobs len = %d, want 1", len(jobs))
+	}
+	failed := domain.JobStatusFailed
+	jobs, err = s.ListJobs(ctx, &failed)
+	if err != nil {
+		t.Fatalf("list jobs filtered failed: %v", err)
+	}
+	if len(jobs) != 0 {
+		t.Errorf("filtered failed list jobs len = %d, want 0", len(jobs))
 	}
 }
 

@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"strings"
 
 	"github.com/xlyk/triptych/internal/client"
+	"github.com/xlyk/triptych/internal/domain"
 )
 
 const defaultServerURL = "http://127.0.0.1:8080"
@@ -60,7 +62,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		data, err = c.Get("/v1/hosts/" + rest[0])
 	case "jobs list":
-		data, err = c.Get("/v1/jobs")
+		data, err = runJobsList(c, rest)
 	case "jobs get":
 		if len(rest) < 1 {
 			err = usageError("usage: tt jobs get <job-id>")
@@ -133,6 +135,27 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+func runJobsList(c *client.Client, args []string) (json.RawMessage, error) {
+	opts, pos, err := parseOptions(args, map[string]*string{"status": nil})
+	if err != nil || len(pos) != 0 {
+		return nil, usageError("usage: tt jobs list [--status <status>]")
+	}
+	params := url.Values{}
+	status := opts["status"]
+	if status != "" {
+		validated := domain.JobStatus(status)
+		if err := validated.Validate(); err != nil {
+			return nil, usageError("usage: tt jobs list [--status <status>]")
+		}
+		params.Set("status", status)
+	}
+	path := "/v1/jobs"
+	if encoded := params.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	return c.Get(path)
 }
 
 func runJobsCreate(c *client.Client, args []string) (json.RawMessage, error) {
@@ -621,7 +644,7 @@ Usage: tt [--json] <resource> <action> [args...]
 Commands:
   hosts list                  List all registered hosts
   hosts get <host-id>         Show details for a host
-  jobs  list                  List all jobs
+  jobs  list [--status <status>]  List jobs, optionally filtered by status
   jobs  get <job-id>          Show details for a job
   jobs  tail <job-id>         Show latest output snapshot for a job
   jobs  attach <job-id>       Show attach info (tmux session) for a job

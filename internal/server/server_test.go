@@ -100,6 +100,45 @@ func TestCreateJobAndWorkBundle(t *testing.T) {
 	}
 }
 
+func TestListJobsStatusFilter(t *testing.T) {
+	store := newMemoryStore()
+	now := time.Now().UTC()
+	store.mustUpsertHost(&domain.Host{
+		HostID:           "host-1",
+		Hostname:         "mbp.local",
+		Online:           true,
+		LastHeartbeatAt:  &now,
+		Capabilities:     []string{"codex", "tmux"},
+		AllowedRepoRoots: []string{"/Users/kyle/work"},
+		Labels:           map[string]string{},
+	})
+	store.jobs["job-running"] = domain.Job{JobID: "job-running", HostID: "host-1", Agent: domain.AgentCodex, Status: domain.JobStatusRunning, RepoPath: "/repo", Goal: "run"}
+	store.jobs["job-failed"] = domain.Job{JobID: "job-failed", HostID: "host-1", Agent: domain.AgentCodex, Status: domain.JobStatusFailed, RepoPath: "/repo", Goal: "fail"}
+	handler := NewHandler(store, nil)
+
+	resp := doJSON(t, handler, http.MethodGet, "/v1/jobs?status=running", nil)
+	assertStatus(t, resp, http.StatusOK)
+	var body struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			Jobs []jobSummary `json:"jobs"`
+		} `json:"data"`
+	}
+	decodeResponse(t, resp, &body)
+	if len(body.Data.Jobs) != 1 {
+		t.Fatalf("jobs len = %d, want 1", len(body.Data.Jobs))
+	}
+	if body.Data.Jobs[0].Job.JobID != "job-running" {
+		t.Fatalf("job_id = %q, want %q", body.Data.Jobs[0].Job.JobID, "job-running")
+	}
+}
+
+func TestListJobsStatusFilterInvalid(t *testing.T) {
+	handler := NewHandler(newMemoryStore(), nil)
+	resp := doJSON(t, handler, http.MethodGet, "/v1/jobs?status=bogus", nil)
+	assertStatus(t, resp, http.StatusBadRequest)
+}
+
 func TestJobCommandIdempotencyAndAckFlow(t *testing.T) {
 	store := newMemoryStore()
 	now := time.Now().UTC()
@@ -420,11 +459,14 @@ func (s *memoryStore) GetJobByIdempotencyKey(_ context.Context, key string) (*do
 	return nil, db.ErrNotFound
 }
 
-func (s *memoryStore) ListJobs(context.Context) ([]domain.Job, error) {
+func (s *memoryStore) ListJobs(_ context.Context, statusFilter *domain.JobStatus) ([]domain.Job, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]domain.Job, 0, len(s.jobs))
 	for _, job := range s.jobs {
+		if statusFilter != nil && job.Status != *statusFilter {
+			continue
+		}
 		out = append(out, job)
 	}
 	return out, nil
